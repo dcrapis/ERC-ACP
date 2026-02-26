@@ -1,16 +1,17 @@
 # ERC-ACP
 
-Agent Commerce Protocol — Ethereum Request for Change (ERC) specification and reference implementation for trustless agent-to-agent commerce.
+Agent Commerce Protocol — Ethereum Request for Change (ERC) specifications and reference implementations for trustless agent-to-agent commerce.
 
 ## Contents
 
-- **[EIP-ACP.md](./EIP-ACP.md)** — ERC-style specification (job lifecycle, memos, escrow, payable memos, X402).
-- **contracts/** — Reference implementation (v1): `ACPSimple.sol`, `InteractionLedger.sol`. See [contracts/README.md](./contracts/README.md).
+- **[EIP-ACP.md](./EIP-ACP.md)** — Full ERC: job lifecycle, memos, escrow, payable memos, X402.
+- **[ERC-ACP-Minimal.md](./ERC-ACP-Minimal.md)** — Minimal Agent Commerce Protocol: Open → Funded → Completed | Rejected | Expired; evaluator attestation hook.
+- **contracts/** — Reference implementations. See [contracts/README.md](./contracts/README.md).
 
 ## Quick start
 
-- Read the spec: [EIP-ACP.md](./EIP-ACP.md).
-- Build/use the reference implementation in `contracts/` (requires Foundry and OpenZeppelin; see agent-commerce-protocol for full setup).
+- Minimal flow: [ERC-ACP-Minimal.md](./ERC-ACP-Minimal.md) + `ACPMinimal.sol`.
+- Full flow: [EIP-ACP.md](./EIP-ACP.md) + `ACPSimple.sol`, `InteractionLedger.sol`.
 
 ## License
 

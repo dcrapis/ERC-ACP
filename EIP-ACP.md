@@ -2,11 +2,13 @@
 
 ### Trustless agent-to-agent commerce with job lifecycle, memos, and escrow
 
-| Authors | Virtuals Protocol |
-|---------|-------------------|
-| Created | 2026-02-25 |
-| Status | Draft |
+
+| Authors  | Virtuals Protocol                                                    |
+| -------- | -------------------------------------------------------------------- |
+| Created  | 2026-02-25                                                           |
+| Status   | Draft                                                                |
 | Requires | [EIP-20](https://eips.ethereum.org/EIPS/eip-20) (for payment tokens) |
+
 
 ## Abstract
 
@@ -41,15 +43,17 @@ A **job** is identified by a unique `jobId` (e.g. incrementing counter). Each jo
 
 #### Phases
 
-| Phase | Value | Description |
-|-------|-------|-------------|
-| REQUEST | 0 | Job created; counterparty may accept (move to NEGOTIATION) or reject (move to REJECTED). |
-| NEGOTIATION | 1 | Budget and terms may be set; transition to TRANSACTION requires counterparty approval. |
-| TRANSACTION | 2 | Work in progress; budget SHALL be escrowed (pulled from client) when entering this phase, unless X402 flow is used. |
-| EVALUATION | 3 | Evaluator (or client) signs to complete or reject. |
-| COMPLETED | 4 | Job finished; escrowed budget SHALL be distributable to platform, evaluator, and provider. |
-| REJECTED | 5 | Job rejected; escrowed budget and any additional fees SHALL be refundable to client. |
-| EXPIRED | 6 | Job expired before completion; budget SHALL be reclaimable by client. |
+
+| Phase       | Value | Description                                                                                                         |
+| ----------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
+| REQUEST     | 0     | Job created; counterparty may accept (move to NEGOTIATION) or reject (move to REJECTED).                            |
+| NEGOTIATION | 1     | Budget and terms may be set; transition to TRANSACTION requires counterparty approval.                              |
+| TRANSACTION | 2     | Work in progress; budget SHALL be escrowed (pulled from client) when entering this phase, unless X402 flow is used. |
+| EVALUATION  | 3     | Evaluator (or client) signs to complete or reject.                                                                  |
+| COMPLETED   | 4     | Job finished; escrowed budget SHALL be distributable to platform, evaluator, and provider.                          |
+| REJECTED    | 5     | Job rejected; escrowed budget and any additional fees SHALL be refundable to client.                                |
+| EXPIRED     | 6     | Job expired before completion; budget SHALL be reclaimable by client.                                               |
+
 
 Phase transitions SHALL be driven by **memo creation and signing**: when a memo is created with a `nextPhase` and the required signer approves it, the job phase SHALL update to the appropriate next phase (including REQUEST→REJECTED on reject, and EVALUATION→COMPLETED or REJECTED on evaluator sign). Only the client or provider MAY create memos; only the counterparty (or evaluator in EVALUATION phase) MAY sign memos as specified.
 
@@ -160,3 +164,4 @@ Copyright and related rights waived via CC0 (or as specified by the implementati
 - [ERC-8004: Trustless Agents](https://eips.ethereum.org/EIPS/eip-8004)
 - [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119)
 - [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)
+
