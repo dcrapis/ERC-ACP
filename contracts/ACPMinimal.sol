@@ -29,9 +29,11 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         address client;
         address provider;
         address evaluator;
+        string description;
         uint256 budget;
         uint256 expiredAt;
         JobStatus status;
+        bool accepted; // true when provider has called acceptJob
     }
 
     IERC20 public paymentToken;
@@ -42,8 +44,10 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     uint256 public jobCounter;
 
     event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt);
+    event ProviderSet(uint256 indexed jobId, address indexed provider);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
+    event JobAccepted(uint256 indexed jobId, address indexed provider);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
     event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
@@ -56,6 +60,8 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     error ZeroAddress();
     error ExpiryTooShort();
     error ZeroBudget();
+    error ProviderNotSet();
+    error AlreadyAccepted();
 
     constructor(address paymentToken_, address treasury_) {
         if (paymentToken_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
@@ -72,8 +78,8 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         platformTreasury = treasury_;
     }
 
-    function createJob(address provider, address evaluator, uint256 expiredAt) external returns (uint256 jobId) {
-        if (provider == address(0) || evaluator == address(0)) revert ZeroAddress();
+    function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description) external returns (uint256 jobId) {
+        if (evaluator == address(0)) revert ZeroAddress();
         if (expiredAt <= block.timestamp + 5 minutes) revert ExpiryTooShort();
         jobId = ++jobCounter;
         jobs[jobId] = Job({
@@ -81,12 +87,26 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
             client: msg.sender,
             provider: provider,
             evaluator: evaluator,
+            description: description,
             budget: 0,
             expiredAt: expiredAt,
-            status: JobStatus.Open
+            status: JobStatus.Open,
+            accepted: false
         });
         emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt);
         return jobId;
+    }
+
+    /// @dev Client sets provider when job was created with provider == address(0). Must be set before fund.
+    function setProvider(uint256 jobId, address provider_) external {
+        Job storage job = jobs[jobId];
+        if (job.id == 0) revert InvalidJob();
+        if (job.status != JobStatus.Open) revert WrongStatus();
+        if (msg.sender != job.client) revert Unauthorized();
+        if (job.provider != address(0)) revert WrongStatus(); // already set
+        if (provider_ == address(0)) revert ZeroAddress();
+        job.provider = provider_;
+        emit ProviderSet(jobId, provider_);
     }
 
     function setBudget(uint256 jobId, uint256 amount) external {
@@ -103,10 +123,22 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
         if (msg.sender != job.client) revert Unauthorized();
+        if (job.provider == address(0)) revert ProviderNotSet();
         if (job.budget == 0) revert ZeroBudget();
         job.status = JobStatus.Funded;
         paymentToken.safeTransferFrom(job.client, address(this), job.budget);
         emit JobFunded(jobId, job.client, job.budget);
+    }
+
+    /// @dev Provider signals they have taken the job (flag only; no state change to lifecycle).
+    function acceptJob(uint256 jobId) external {
+        Job storage job = jobs[jobId];
+        if (job.id == 0) revert InvalidJob();
+        if (job.status != JobStatus.Funded) revert WrongStatus();
+        if (msg.sender != job.provider) revert Unauthorized();
+        if (job.accepted) revert AlreadyAccepted();
+        job.accepted = true;
+        emit JobAccepted(jobId, msg.sender);
     }
 
     function complete(uint256 jobId, bytes32 reason) external nonReentrant {
