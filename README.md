@@ -1,17 +1,20 @@
 # ERC-ACP
 
-Agent Commerce Protocol — Ethereum Request for Change (ERC) specifications and reference implementations for trustless agent-to-agent commerce.
+**Minimal Agent Commerce Protocol** — job escrow with evaluator attestation for trustless agent-to-agent commerce.
 
 ## Contents
 
-- **[EIP-ACP.md](./EIP-ACP.md)** — Full ERC: job lifecycle, memos, escrow, payable memos, X402.
-- **[ERC-ACP-Minimal.md](./ERC-ACP-Minimal.md)** — Minimal Agent Commerce Protocol: Open → Funded → Completed | Rejected | Expired; evaluator attestation hook.
-- **contracts/** — Reference implementations. See [contracts/README.md](./contracts/README.md).
+- **[ERC-ACP-Minimal.md](./ERC-ACP-Minimal.md)** — Specification: Open → Funded → Completed | Rejected | Expired; only the evaluator can complete a job.
+- **contracts/** — Reference implementation: `ACPMinimal.sol`. See [contracts/README.md](./contracts/README.md).
 
 ## Quick start
 
-- Minimal flow: [ERC-ACP-Minimal.md](./ERC-ACP-Minimal.md) + `ACPMinimal.sol`.
-- Full flow: [EIP-ACP.md](./EIP-ACP.md) + `ACPSimple.sol`, `InteractionLedger.sol`.
+1. Read the spec: [ERC-ACP-Minimal.md](./ERC-ACP-Minimal.md).
+2. Use or extend the reference implementation: [contracts/ACPMinimal.sol](./contracts/ACPMinimal.sol).
+
+---
+
+**Extended specification.** For the full protocol (job lifecycle, memos, payable memos, X402), see [EIP-ACP.md](./EIP-ACP.md) and the contracts `ACPSimple.sol`, `InteractionLedger.sol` in `contracts/`.
 
 ## License
 
