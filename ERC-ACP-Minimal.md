@@ -12,7 +12,7 @@
 
 ## Abstract
 
-This specification defines the **Minimal Agent Commerce Protocol**: a **job** with escrowed budget, three states (Open → Funded → Terminal), and an **evaluator** who alone may mark the job completed. The client funds the job; the evaluator attests completion (or the client rejects / job expires and the client is refunded). Optional attestation **reason** (e.g. hash) on complete/reject enables audit and composition with reputation (e.g. [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)).
+This specification defines the **Minimal Agent Commerce Protocol**: a **job** with escrowed budget, three states (Open → Funded → Terminal), and an **evaluator** who alone may mark the job completed. The client funds the job; the evaluator attests completion or rejection once funded (or the client rejects while Open, or the job expires and the client is refunded). Optional attestation **reason** (e.g. hash) on complete/reject enables audit and composition with reputation (e.g. [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)).
 
 ## Motivation
 
@@ -30,7 +30,7 @@ A **job** has exactly one of four states:
 | State         | Meaning                                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Open**      | Created; budget set but not escrowed. Client may fund or reject.                                                    |
-| **Funded**    | Budget escrowed. Only evaluator may complete; only client may reject. After `expiredAt`, anyone may trigger refund. |
+| **Funded**    | Budget escrowed. Only evaluator may complete or reject. After `expiredAt`, anyone may trigger refund.                 |
 | **Completed** | Terminal. Escrow released to provider (minus optional platform fee).                                                |
 | **Rejected**  | Terminal. Escrow refunded to client.                                                                                |
 | **Expired**   | Terminal. Same as Rejected; escrow refunded to client.                                                              |
@@ -41,16 +41,16 @@ Allowed transitions:
 - **Open → Funded**: Client calls `fund(jobId)` (or equivalent); contract pulls `budget` from client into escrow.
 - **Open → Rejected**: Client calls `reject(jobId, reason?)`.
 - **Funded → Completed**: Evaluator calls `complete(jobId, reason?)`; contract distributes escrow to provider (and optional fee to treasury).
-- **Funded → Rejected**: Client calls `reject(jobId, reason?)`; contract refunds client.
+- **Funded → Rejected**: Evaluator calls `reject(jobId, reason?)`; contract refunds client.
 - **Funded → Expired**: When `block.timestamp >= job.expiredAt`, anyone (or client) may call `claimRefund(jobId)`; contract sets state to Expired and refunds client.
 
 No other transitions are valid.
 
 ### Roles
 
-- **Client**: Creates job, sets budget, funds escrow, may reject before or after funding. Receives refund on Rejected/Expired.
+- **Client**: Creates job, sets budget, funds escrow, may reject **only when status is Open**. Receives refund on Rejected/Expired.
 - **Provider**: Receives payment when job is Completed. Does not call `complete` or `reject`.
-- **Evaluator**: Single address per job, set at creation. **Only** role that MAY call `complete(jobId, reason?)`. MAY be the client (e.g. `evaluator = client`) so the client can complete the job without a third party.
+- **Evaluator**: Single address per job, set at creation. When status is Funded, **only** the evaluator MAY call `complete(jobId, reason?)` or `reject(jobId, reason?)`. MAY be the client (e.g. `evaluator = client`) so the client can complete or reject the job without a third party.
 
 ### Job Data
 
@@ -74,7 +74,7 @@ Called by client. SHALL revert if job is not Open or budget is zero. SHALL trans
 - **complete(jobId, reason)**  
 Called by evaluator only. SHALL revert if job is not Funded or caller is not the job’s evaluator. SHALL set status to Completed. SHALL transfer escrowed funds to provider (minus optional platform fee to a configurable treasury). `reason` MAY be `bytes32(0)` or an attestation hash (OPTIONAL). SHALL emit an event including `reason` if provided.
 - **reject(jobId, reason)**  
-Called by client. SHALL revert if job is not Open or Funded, or caller is not client. SHALL set status to Rejected. If Funded, SHALL refund escrow to client. `reason` OPTIONAL. SHALL emit an event including `reason` if provided.
+Called by **client when job is Open** or by **evaluator when job is Funded**. SHALL revert if job is not Open or Funded, or caller is not the client (when Open) or the evaluator (when Funded). SHALL set status to Rejected. If Funded, SHALL refund escrow to client. `reason` OPTIONAL. SHALL emit an event including `reason` and the caller (rejector) if provided.
 - **claimRefund(jobId)**  
 Callable when job is Funded and `block.timestamp >= expiredAt`, or when job is already Rejected/Expired. SHALL transfer full escrow to client and set status to Expired if not already terminal. MAY restrict caller (e.g. client only) or allow anyone; the specification RECOMMENDS allowing anyone to trigger refund after expiry.
 
@@ -95,7 +95,7 @@ Implementations SHOULD emit at least:
 - **BudgetSet**(jobId, amount)
 - **JobFunded**(jobId, client, amount)
 - **JobCompleted**(jobId, evaluator, reason)
-- **JobRejected**(jobId, client, reason)
+- **JobRejected**(jobId, rejector, reason)
 - **JobExpired**(jobId)
 - **PaymentReleased**(jobId, provider, amount)
 - **Refunded**(jobId, client, amount)
@@ -108,14 +108,15 @@ Implementations SHOULD emit at least:
 
 ## Rationale
 
-- **Single attester**: Only the evaluator can complete; no ambiguity. Evaluator = client covers the “no third party” case.
+- **Single attester after funding**: Once Funded, only the evaluator can complete or reject; the client cannot pull funds back unilaterally, so the provider is protected after starting work. Evaluator = client covers the “no third party” case.
 - **Minimal surface**: Attestation is the optional `reason` on complete/reject; no additional ledger is required.
 - **Three states + terminal**: Open, Funded, and three terminal states are enough for “fund → work → complete or refund”.
 - **Expiry**: Refund after `expiredAt` gives client a way to reclaim funds without an explicit reject.
 
 ## Security Considerations
 
-- Evaluator is trusted for completion; a malicious evaluator can complete and pay the provider even if work was not done. Use reputation (e.g. ERC-8004) or staking for high-value jobs.
+- Evaluator is trusted for completion and rejection once the job is Funded; a malicious evaluator can complete or reject arbitrarily. Use reputation (e.g. ERC-8004) or staking for high-value jobs.
+- Once Funded, only the evaluator can move the job to Completed or Rejected; the client cannot unilaterally withdraw, which protects the provider after they start work.
 - No dispute resolution or arbitration; reject/expire is final.
 - Single payment token per contract reduces attack surface; per-job tokens are an extension.
 

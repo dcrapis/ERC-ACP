@@ -45,7 +45,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
-    event JobRejected(uint256 indexed jobId, address indexed client, bytes32 reason);
+    event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
     event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount);
     event Refunded(uint256 indexed jobId, address indexed client, uint256 amount);
@@ -128,11 +128,17 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         emit PaymentReleased(jobId, job.provider, net);
     }
 
+    /// @dev Client may reject only when Open; evaluator may reject when Funded (refunds client).
     function reject(uint256 jobId, bytes32 reason) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
-        if (job.status != JobStatus.Open && job.status != JobStatus.Funded) revert WrongStatus();
-        if (msg.sender != job.client) revert Unauthorized();
+        if (job.status == JobStatus.Open) {
+            if (msg.sender != job.client) revert Unauthorized();
+        } else if (job.status == JobStatus.Funded) {
+            if (msg.sender != job.evaluator) revert Unauthorized();
+        } else {
+            revert WrongStatus();
+        }
         JobStatus prev = job.status;
         job.status = JobStatus.Rejected;
         if (prev == JobStatus.Funded && job.budget > 0) {
