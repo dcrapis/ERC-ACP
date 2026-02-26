@@ -1,9 +1,9 @@
-# Minimal Agent Commerce Protocol
+# ERC-XXXX: Minimal Agent Commerce Protocol
 
 ### Job escrow with evaluator attestation
 
 
-| Authors  | Virtuals Protocol                                                    |
+| Authors  | XXXX                                                                 |
 | -------- | -------------------------------------------------------------------- |
 | Created  | 2026-02-25                                                           |
 | Status   | Draft                                                                |
