@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// ERC-ACP-Minimal: Minimal Agent Commerce Protocol — job escrow with evaluator attestation
+// ERC-ACP: Agentic Commerce — job escrow with evaluator attestation
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
@@ -8,10 +8,10 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
- * @title ACPMinimal
- * @dev Minimal Agent Commerce Protocol (ERC-ACP-Minimal): Open -> Funded -> Submitted -> Completed | Rejected | Expired. Only evaluator can complete.
+ * @title AgenticCommerce
+ * @dev Agentic Commerce protocol: Open -> Funded -> Submitted -> Completed | Rejected | Expired. Only evaluator can complete.
  */
-contract ACPMinimal is AccessControl, ReentrancyGuard {
+contract AgenticCommerce is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -34,7 +34,6 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         uint256 budget;
         uint256 expiredAt;
         JobStatus status;
-        bool accepted; // true when provider has called acceptJob
     }
 
     IERC20 public paymentToken;
@@ -48,7 +47,6 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     event ProviderSet(uint256 indexed jobId, address indexed provider);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
-    event JobAccepted(uint256 indexed jobId, address indexed provider);
     event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
     event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
@@ -63,7 +61,6 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     error ExpiryTooShort();
     error ZeroBudget();
     error ProviderNotSet();
-    error AlreadyAccepted();
 
     constructor(address paymentToken_, address treasury_) {
         if (paymentToken_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
@@ -92,8 +89,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
             description: description,
             budget: 0,
             expiredAt: expiredAt,
-            status: JobStatus.Open,
-            accepted: false
+            status: JobStatus.Open
         });
         emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt);
         return jobId;
@@ -130,17 +126,6 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         job.status = JobStatus.Funded;
         paymentToken.safeTransferFrom(job.client, address(this), job.budget);
         emit JobFunded(jobId, job.client, job.budget);
-    }
-
-    /// @dev Provider signals they have taken the job (flag only; no state change to lifecycle).
-    function acceptJob(uint256 jobId) external {
-        Job storage job = jobs[jobId];
-        if (job.id == 0) revert InvalidJob();
-        if (job.status != JobStatus.Funded) revert WrongStatus();
-        if (msg.sender != job.provider) revert Unauthorized();
-        if (job.accepted) revert AlreadyAccepted();
-        job.accepted = true;
-        emit JobAccepted(jobId, msg.sender);
     }
 
     /// @dev Provider submits work, moving the job from Funded to Submitted for evaluator review.
