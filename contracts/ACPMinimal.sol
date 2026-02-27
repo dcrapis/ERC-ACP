@@ -49,7 +49,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event JobAccepted(uint256 indexed jobId, address indexed provider);
-    event JobSubmitted(uint256 indexed jobId, address indexed provider);
+    event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
     event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
@@ -144,13 +144,13 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     }
 
     /// @dev Provider submits work, moving the job from Funded to Submitted for evaluator review.
-    function submit(uint256 jobId) external {
+    function submit(uint256 jobId, bytes32 deliverable) external {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Funded) revert WrongStatus();
         if (msg.sender != job.provider) revert Unauthorized();
         job.status = JobStatus.Submitted;
-        emit JobSubmitted(jobId, msg.sender);
+        emit JobSubmitted(jobId, msg.sender, deliverable);
     }
 
     function complete(uint256 jobId, bytes32 reason) external nonReentrant {

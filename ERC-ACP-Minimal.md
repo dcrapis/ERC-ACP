@@ -41,7 +41,7 @@ Allowed transitions:
 
 - **Open → Funded**: Client calls `setBudget(jobId, amount)` then `fund(jobId)`; contract pulls `job.budget` from client into escrow.
 - **Open → Rejected**: Client calls `reject(jobId, reason?)`.
-- **Funded → Submitted**: Provider calls `submit(jobId)`; signals that work has been completed and is ready for evaluation.
+- **Funded → Submitted**: Provider calls `submit(jobId, deliverable)`; signals that work has been completed and is ready for evaluation.
 - **Funded → Rejected**: Evaluator calls `reject(jobId, reason?)`; contract refunds client.
 - **Funded → Expired**: When `block.timestamp >= job.expiredAt`, anyone (or client) may call `claimRefund(jobId)`; contract sets state to Expired and refunds client.
 - **Submitted → Completed**: Evaluator calls `complete(jobId, reason?)`; contract distributes escrow to provider (and optional fee to treasury).
@@ -53,7 +53,7 @@ No other transitions are valid.
 ### Roles
 
 - **Client**: Creates job (with optional description), may set provider via `setProvider(jobId, provider)` when job was created with no provider, sets budget with `setBudget(jobId, amount)`, funds escrow with `fund(jobId)`, may reject **only when status is Open**. Receives refund on Rejected/Expired.
-- **Provider**: Set at creation or later via `setProvider`. May call `acceptJob(jobId)` when job is Funded to signal they have taken the job. Calls `submit(jobId)` when work is done to move the job from Funded to Submitted for evaluation. Receives payment when job is Completed. Does not call `complete` or `reject`.
+- **Provider**: Set at creation or later via `setProvider`. May call `acceptJob(jobId)` when job is Funded to signal they have taken the job. Calls `submit(jobId, deliverable)` when work is done to move the job from Funded to Submitted for evaluation. Receives payment when job is Completed. Does not call `complete` or `reject`.
 - **Evaluator**: Single address per job, set at creation. When status is Submitted, **only** the evaluator MAY call `complete(jobId, reason?)` or `reject(jobId, reason?)`. When status is Funded, the evaluator MAY call `reject(jobId, reason?)` (before submission). MAY be the client (e.g. `evaluator = client`) so the client can complete or reject the job without a third party.
 
 ### Job Data
@@ -86,8 +86,8 @@ Called by client. Creates job in Open with `client = msg.sender`, `provider`, `e
 Called by client. Sets `job.budget = amount`. SHALL revert if job is not Open or caller is not client.
 - **fund(jobId)**  
 Called by client. SHALL revert if job is not Open, caller is not client, budget is zero, or **provider is not set** (`job.provider == address(0)`). SHALL transfer `job.budget` of the payment token from client to the contract (escrow) and set status to Funded.
-- **submit(jobId)**
-Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. SHALL emit an event (e.g. JobSubmitted).
+- **submit(jobId, deliverable)**
+Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. `deliverable` (`bytes32`) is a reference to submitted work (e.g. hash of off-chain deliverable, IPFS CID, attestation commitment). SHALL emit an event including `deliverable` (e.g. JobSubmitted).
 - **complete(jobId, reason)**
 Called by evaluator only. SHALL revert if job is not Submitted or caller is not the job’s evaluator. SHALL set status to Completed. SHALL transfer escrowed funds to provider (minus optional platform fee to a configurable treasury). `reason` MAY be `bytes32(0)` or an attestation hash (OPTIONAL). SHALL emit an event including `reason` if provided.
 - **reject(jobId, reason)**
@@ -121,7 +121,7 @@ Implementations SHOULD emit at least:
 - **BudgetSet**(jobId, amount)
 - **JobFunded**(jobId, client, amount)
 - **JobAccepted**(jobId, provider) — when provider signals they have taken the job
-- **JobSubmitted**(jobId, provider) — when provider submits work for evaluation
+- **JobSubmitted**(jobId, provider, deliverable) — when provider submits work for evaluation
 - **JobCompleted**(jobId, evaluator, reason)
 - **JobRejected**(jobId, rejector, reason)
 - **JobExpired**(jobId)
