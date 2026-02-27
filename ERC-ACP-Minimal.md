@@ -66,6 +66,7 @@ Each job SHALL have at least:
 - `expiredAt` (uint256 timestamp)
 - `status` (Open | Funded | Submitted | Completed | Rejected | Expired)
 - `accepted` (boolean) — set when the provider has signaled they have taken the job (see Provider acceptance below).
+- `hook` (address) — OPTIONAL. External hook contract called before and after core functions (see Hooks below). MAY be `address(0)` (no hook).
 
 Payment SHALL use a single ERC-20 token (global for the contract or specified at creation). Implementations MAY support a per-job token; the specification only requires one token per contract.
 
@@ -80,18 +81,18 @@ Jobs MAY be created **without a provider** by passing `provider = address(0)` to
 
 ### Core Functions
 
-- **createJob(provider, evaluator, expiredAt, description)**  
-Called by client. Creates job in Open with `client = msg.sender`, `provider`, `evaluator`, `expiredAt`, `description`. SHALL revert if `evaluator` is zero or `expiredAt` is not in the future. **Provider MAY be zero**; if so, client MUST call `setProvider` before `fund`. Returns `jobId`.
-- **setBudget(jobId, amount)**  
-Called by client. Sets `job.budget = amount`. SHALL revert if job is not Open or caller is not client.
-- **fund(jobId)**  
-Called by client. SHALL revert if job is not Open, caller is not client, budget is zero, or **provider is not set** (`job.provider == address(0)`). SHALL transfer `job.budget` of the payment token from client to the contract (escrow) and set status to Funded.
-- **submit(jobId)**
-Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. SHALL emit an event (e.g. JobSubmitted).
-- **complete(jobId, reason)**
-Called by evaluator only. SHALL revert if job is not Submitted or caller is not the job’s evaluator. SHALL set status to Completed. SHALL transfer escrowed funds to provider (minus optional platform fee to a configurable treasury). `reason` MAY be `bytes32(0)` or an attestation hash (OPTIONAL). SHALL emit an event including `reason` if provided.
-- **reject(jobId, reason)**
-Called by **client when job is Open** or by **evaluator when job is Funded or Submitted**. SHALL revert if job is not Open, Funded, or Submitted, or caller is not the client (when Open) or the evaluator (when Funded or Submitted). SHALL set status to Rejected. If Funded or Submitted, SHALL refund escrow to client. `reason` OPTIONAL. SHALL emit an event including `reason` and the caller (rejector) if provided.
+- **createJob(provider, evaluator, expiredAt, description, hook?)**
+Called by client. Creates job in Open with `client = msg.sender`, `provider`, `evaluator`, `expiredAt`, `description`, and optional `hook` address. SHALL revert if `evaluator` is zero or `expiredAt` is not in the future. **Provider MAY be zero**; if so, client MUST call `setProvider` before `fund`. `hook` MAY be `address(0)` (no hook). Returns `jobId`.
+- **setBudget(jobId, amount, optParams?)**
+Called by client. Sets `job.budget = amount`. SHALL revert if job is not Open or caller is not client. `optParams` (bytes, OPTIONAL) is forwarded to the hook contract if set (see Hooks).
+- **fund(jobId, optParams?)**
+Called by client. SHALL revert if job is not Open, caller is not client, budget is zero, or **provider is not set** (`job.provider == address(0)`). SHALL transfer `job.budget` of the payment token from client to the contract (escrow) and set status to Funded. `optParams` forwarded to hook if set.
+- **submit(jobId, optParams?)**
+Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. SHALL emit an event (e.g. JobSubmitted). `optParams` forwarded to hook if set.
+- **complete(jobId, reason, optParams?)**
+Called by evaluator only. SHALL revert if job is not Submitted or caller is not the job’s evaluator. SHALL set status to Completed. SHALL transfer escrowed funds to provider (minus optional platform fee to a configurable treasury). `reason` MAY be `bytes32(0)` or an attestation hash (OPTIONAL). SHALL emit an event including `reason` if provided. `optParams` forwarded to hook if set.
+- **reject(jobId, reason, optParams?)**
+Called by **client when job is Open** or by **evaluator when job is Funded or Submitted**. SHALL revert if job is not Open, Funded, or Submitted, or caller is not the client (when Open) or the evaluator (when Funded or Submitted). SHALL set status to Rejected. If Funded or Submitted, SHALL refund escrow to client. `reason` OPTIONAL. SHALL emit an event including `reason` and the caller (rejector) if provided. `optParams` forwarded to hook if set.
 - **claimRefund(jobId)**
 Callable when job is Funded or Submitted and `block.timestamp >= expiredAt`, or when job is already Rejected/Expired. SHALL transfer full escrow to client and set status to Expired if not already terminal. MAY restrict caller (e.g. client only) or allow anyone; the specification RECOMMENDS allowing anyone to trigger refund after expiry.
 
@@ -111,6 +112,53 @@ To track that the provider has “taken” the job (e.g. for UIs and indexers), 
 ### Fees
 
 Implementations MAY charge a **platform fee** (basis points) on Completed, paid to a configurable treasury. The specification does not require a fee. If present, fee SHALL be deducted only on completion (not on refund).
+
+### Hooks (OPTIONAL)
+
+Implementations MAY support an optional **hook contract** per job to extend the core protocol without modifying it. The hook address is set at job creation (or `address(0)` for no hook) and stored on the job.
+
+A hook contract SHALL implement the `IACPHook` interface — just two functions:
+
+```solidity
+interface IACPHook {
+    function beforeAction(uint256 jobId, bytes4 selector, bytes calldata optParams) external;
+    function afterAction(uint256 jobId, bytes4 selector, bytes calldata optParams) external;
+}
+```
+
+The `selector` parameter identifies which core function is being called (e.g. `ACPMinimal.fund.selector`). The hook uses it to route internally:
+
+```solidity
+function beforeAction(uint256 jobId, bytes4 selector, bytes calldata optParams) external {
+    if (selector == IACPMinimal.fund.selector) {
+        // custom pre-fund logic
+    } else if (selector == IACPMinimal.complete.selector) {
+        // custom pre-complete logic
+    }
+}
+```
+
+When a job has a hook set, the core contract SHALL call `hook.beforeAction(...)` and `hook.afterAction(...)` around each hookable function:
+
+| Core function  | Hookable |
+| -------------- | -------- |
+| `setBudget`    | Yes      |
+| `fund`         | Yes      |
+| `submit`       | Yes      |
+| `complete`     | Yes      |
+| `reject`       | Yes      |
+| `claimRefund`  | **No** — permissionless safety mechanism, SHALL NOT be hookable |
+
+- The `optParams` field (`bytes`, OPTIONAL) on each hookable core function is an opaque payload forwarded to the hook. Callers that do not use hooks MAY pass empty bytes. The core contract SHALL NOT interpret `optParams`; it is for the hook only.
+- **Before hooks** (`beforeAction`) are called before the core logic executes. A before hook MAY revert to block the action (e.g. enforce custom validation, allowlists, or preconditions).
+- **After hooks** (`afterAction`) are called after the core logic completes (including state changes and token transfers). An after hook MAY perform side effects (e.g. emit events, update external state, trigger notifications) or revert to roll back the entire transaction.
+- If `job.hook == address(0)`, the core contract SHALL skip hook calls and execute normally.
+
+**Example use cases for hooks:**
+- Pre-fund validation (e.g. KYC check, allowlist gate)
+- Post-complete reputation updates (e.g. writing attestations to ERC-8004)
+- Custom fee logic or payment splitting
+- Event relaying to off-chain indexers
 
 ### Events
 
@@ -141,6 +189,7 @@ Implementations SHOULD emit at least:
 - **Minimal surface**: Attestation is the optional `reason` on complete/reject; no additional ledger is required.
 - **Four states + terminal**: Open, Funded, Submitted, and three terminal states are enough for “fund → work → submit → evaluate or refund”.
 - **Expiry**: Refund after `expiredAt` gives client a way to reclaim funds without an explicit reject.
+- **Hooks over inheritance**: Optional hook contracts let integrators extend the protocol (validation, reputation, fees) without modifying or inheriting from the core contract. The core stays minimal; complexity lives in the hook.
 
 ## Security Considerations
 
@@ -148,6 +197,7 @@ Implementations SHOULD emit at least:
 - Once Funded, only the evaluator can reject, and only the provider can submit; the client cannot unilaterally withdraw, which protects the provider after they start work.
 - No dispute resolution or arbitration; reject/expire is final.
 - Single payment token per contract reduces attack surface; per-job tokens are an extension.
+- Hook contracts are client-supplied and untrusted; implementations SHOULD use a gas limit on hook calls to prevent griefing, and MUST NOT allow hooks to modify core escrow state directly. `claimRefund` is deliberately not hookable so that refunds after expiry cannot be blocked by a malicious hook.
 
 ## Copyright
 

@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./IACPHook.sol";
 
 /**
  * @title ACPMinimal
@@ -30,6 +31,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         address client;
         address provider;
         address evaluator;
+        address hook; // optional hook contract (address(0) = no hook)
         string description;
         uint256 budget;
         uint256 expiredAt;
@@ -80,7 +82,19 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         platformTreasury = treasury_;
     }
 
-    function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description) external returns (uint256 jobId) {
+    function _beforeHook(Job storage job, bytes4 selector, bytes calldata optParams) internal {
+        if (job.hook != address(0)) {
+            IACPHook(job.hook).beforeAction(job.id, selector, optParams);
+        }
+    }
+
+    function _afterHook(Job storage job, bytes4 selector, bytes calldata optParams) internal {
+        if (job.hook != address(0)) {
+            IACPHook(job.hook).afterAction(job.id, selector, optParams);
+        }
+    }
+
+    function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description, address hook) external returns (uint256 jobId) {
         if (evaluator == address(0)) revert ZeroAddress();
         if (expiredAt <= block.timestamp + 5 minutes) revert ExpiryTooShort();
         jobId = ++jobCounter;
@@ -89,6 +103,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
             client: msg.sender,
             provider: provider,
             evaluator: evaluator,
+            hook: hook,
             description: description,
             budget: 0,
             expiredAt: expiredAt,
@@ -111,25 +126,29 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         emit ProviderSet(jobId, provider_);
     }
 
-    function setBudget(uint256 jobId, uint256 amount) external {
+    function setBudget(uint256 jobId, uint256 amount, bytes calldata optParams) external {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
         if (msg.sender != job.client) revert Unauthorized();
+        _beforeHook(job, this.setBudget.selector, optParams);
         job.budget = amount;
         emit BudgetSet(jobId, amount);
+        _afterHook(job, this.setBudget.selector, optParams);
     }
 
-    function fund(uint256 jobId) external nonReentrant {
+    function fund(uint256 jobId, bytes calldata optParams) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
         if (msg.sender != job.client) revert Unauthorized();
         if (job.provider == address(0)) revert ProviderNotSet();
         if (job.budget == 0) revert ZeroBudget();
+        _beforeHook(job, this.fund.selector, optParams);
         job.status = JobStatus.Funded;
         paymentToken.safeTransferFrom(job.client, address(this), job.budget);
         emit JobFunded(jobId, job.client, job.budget);
+        _afterHook(job, this.fund.selector, optParams);
     }
 
     /// @dev Provider signals they have taken the job (flag only; no state change to lifecycle).
@@ -144,20 +163,23 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     }
 
     /// @dev Provider submits work, moving the job from Funded to Submitted for evaluator review.
-    function submit(uint256 jobId) external {
+    function submit(uint256 jobId, bytes calldata optParams) external {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Funded) revert WrongStatus();
         if (msg.sender != job.provider) revert Unauthorized();
+        _beforeHook(job, this.submit.selector, optParams);
         job.status = JobStatus.Submitted;
         emit JobSubmitted(jobId, msg.sender);
+        _afterHook(job, this.submit.selector, optParams);
     }
 
-    function complete(uint256 jobId, bytes32 reason) external nonReentrant {
+    function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Submitted) revert WrongStatus();
         if (msg.sender != job.evaluator) revert Unauthorized();
+        _beforeHook(job, this.complete.selector, optParams);
         job.status = JobStatus.Completed;
         uint256 amount = job.budget;
         uint256 fee = (amount * platformFeeBP) / 10000;
@@ -170,10 +192,11 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         }
         emit JobCompleted(jobId, msg.sender, reason);
         emit PaymentReleased(jobId, job.provider, net);
+        _afterHook(job, this.complete.selector, optParams);
     }
 
     /// @dev Client may reject only when Open; evaluator may reject when Funded or Submitted (refunds client).
-    function reject(uint256 jobId, bytes32 reason) external nonReentrant {
+    function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status == JobStatus.Open) {
@@ -183,6 +206,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         } else {
             revert WrongStatus();
         }
+        _beforeHook(job, this.reject.selector, optParams);
         JobStatus prev = job.status;
         job.status = JobStatus.Rejected;
         if ((prev == JobStatus.Funded || prev == JobStatus.Submitted) && job.budget > 0) {
@@ -190,6 +214,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
             emit Refunded(jobId, job.client, job.budget);
         }
         emit JobRejected(jobId, msg.sender, reason);
+        _afterHook(job, this.reject.selector, optParams);
     }
 
     function claimRefund(uint256 jobId) external nonReentrant {
