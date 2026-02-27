@@ -9,7 +9,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title ACPMinimal
- * @dev Minimal Agent Commerce Protocol (ERC-ACP-Minimal): Open -> Funded -> Completed | Rejected | Expired. Only evaluator can complete.
+ * @dev Minimal Agent Commerce Protocol (ERC-ACP-Minimal): Open -> Funded -> Submitted -> Completed | Rejected | Expired. Only evaluator can complete.
  */
 contract ACPMinimal is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -19,6 +19,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     enum JobStatus {
         Open,
         Funded,
+        Submitted,
         Completed,
         Rejected,
         Expired
@@ -48,6 +49,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event JobAccepted(uint256 indexed jobId, address indexed provider);
+    event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
     event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
@@ -141,10 +143,20 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         emit JobAccepted(jobId, msg.sender);
     }
 
-    function complete(uint256 jobId, bytes32 reason) external nonReentrant {
+    /// @dev Provider submits work, moving the job from Funded to Submitted for evaluator review.
+    function submit(uint256 jobId, bytes32 deliverable) external {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Funded) revert WrongStatus();
+        if (msg.sender != job.provider) revert Unauthorized();
+        job.status = JobStatus.Submitted;
+        emit JobSubmitted(jobId, msg.sender, deliverable);
+    }
+
+    function complete(uint256 jobId, bytes32 reason) external nonReentrant {
+        Job storage job = jobs[jobId];
+        if (job.id == 0) revert InvalidJob();
+        if (job.status != JobStatus.Submitted) revert WrongStatus();
         if (msg.sender != job.evaluator) revert Unauthorized();
         job.status = JobStatus.Completed;
         uint256 amount = job.budget;
@@ -160,20 +172,20 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         emit PaymentReleased(jobId, job.provider, net);
     }
 
-    /// @dev Client may reject only when Open; evaluator may reject when Funded (refunds client).
+    /// @dev Client may reject only when Open; evaluator may reject when Funded or Submitted (refunds client).
     function reject(uint256 jobId, bytes32 reason) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status == JobStatus.Open) {
             if (msg.sender != job.client) revert Unauthorized();
-        } else if (job.status == JobStatus.Funded) {
+        } else if (job.status == JobStatus.Funded || job.status == JobStatus.Submitted) {
             if (msg.sender != job.evaluator) revert Unauthorized();
         } else {
             revert WrongStatus();
         }
         JobStatus prev = job.status;
         job.status = JobStatus.Rejected;
-        if (prev == JobStatus.Funded && job.budget > 0) {
+        if ((prev == JobStatus.Funded || prev == JobStatus.Submitted) && job.budget > 0) {
             paymentToken.safeTransfer(job.client, job.budget);
             emit Refunded(jobId, job.client, job.budget);
         }
@@ -183,7 +195,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     function claimRefund(uint256 jobId) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
-        if (job.status != JobStatus.Funded) revert WrongStatus();
+        if (job.status != JobStatus.Funded && job.status != JobStatus.Submitted) revert WrongStatus();
         if (block.timestamp < job.expiredAt) revert WrongStatus();
         job.status = JobStatus.Expired;
         if (job.budget > 0) {
