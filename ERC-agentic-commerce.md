@@ -71,7 +71,7 @@ Payment SHALL use a single ERC-20 token (global for the contract or specified at
 
 ### Optional provider (set later)
 
-Jobs MAY be created **without a provider** by passing `provider = address(0)` to `createJob`. In that case the client SHALL set the provider later via `setProvider(jobId, provider)` before funding. This supports flows such as auctions or assignment after creation.
+Jobs MAY be created **without a provider** by passing `provider = address(0)` to `createJob`. In that case the client SHALL set the provider later via `setProvider(jobId, provider)` before funding. This supports flows such as bidding or assignment after creation.
 
 - **setProvider(jobId, provider)**  
 Called by **client** only. SHALL revert if job is not Open, current `job.provider != address(0)`, or `provider == address(0)`. SHALL set `job.provider = provider` and SHALL emit an event (e.g. ProviderSet). Implementations MAY allow an operator role to call setProvider in the future; this specification only requires client-only for the minimal protocol.
@@ -181,7 +181,7 @@ Implementations MAY provide a `BaseACPHook` that routes the generic `beforeActio
 - Post-complete reputation updates (e.g. writing attestations to ERC-8004)
 - Custom fee logic or payment splitting
 - Atomic side transfers (e.g. fund transfer hook)
-- Provider auction / bidding (e.g. auction hook)
+- Provider bidding (e.g. bidding hook)
 
 ---
 
@@ -221,44 +221,42 @@ Step 5 — submit + complete
 
 ---
 
-#### Example 2 — Auction Hook
+#### Example 2 — Bidding Hook
 
-**Problem:** A client wants to hire the best agent for a job but does not know upfront who to assign. The selection should be determined by an open bidding process, not unilaterally by the client after the fact.
+**Problem:** A client wants to hire the cheapest (or best) agent for a job but does not know upfront who to assign. The selection should be determined by an open bidding process, not unilaterally by the client after the fact.
 
-**Solution:** An `AuctionHook` that manages a bidding window. The `beforeAction` callback for `setProvider` validates that the address the client submits is the auction winner — the hook enforces the outcome.
+**Solution:** A `BiddingHook` that verifies off-chain signed bids. Providers sign bid commitments off-chain; the client collects bids, selects the winner, and submits the winning bid's signature via `setProvider`. The hook's `beforeAction` callback recovers the signer and verifies it matches the chosen provider — proving the provider actually committed to that price.
 
-Note: `openAuction`, `placeBid`, and `closeAuction` are direct calls to the hook contract (the auction system), not ACP callbacks. The hook callbacks only fire at `setProvider` to enforce the auction outcome.
+Zero direct calls to the hook. All interactions flow through the core contract → hook callbacks.
 
 ```
 Step 1 — createJob
-  Client → createJob(provider=0, evaluator, expiredAt, desc, hook=AuctionHook)
+  Client → createJob(provider=0, evaluator, expiredAt, desc, hook=BiddingHook)
   Job created (Open), provider = address(0).
-  Client → AuctionHook.openAuction(jobId, deadline)
 
-Step 2 — bidding (called directly on AuctionHook by agents/providers)
-  AgentA → AuctionHook.placeBid(jobId, bidAmount)
-  AgentB → AuctionHook.placeBid(jobId, bidAmount)
-  ...
-  AuctionHook records all bids. Core contract is unaware of bids.
+Step 2 — setBudget (opens bidding via hook callback)
+  Client → setBudget(jobId, maxBudget, optParams=abi.encode(biddingDeadline))
+    → hook.beforeAction: store deadline for this jobId.
 
-Step 3 — close auction (after deadline)
-  Client → AuctionHook.closeAuction(jobId)
-  AuctionHook picks winner (e.g. lowest bid), stores winner.
+Step 3 — bidding happens OFF-CHAIN
+  Providers sign: keccak256(abi.encode(chainId, hookAddress, jobId, bidAmount))
+  Client collects signed bids and selects the winner.
+  Core contract is unaware of bids.
 
-Step 4 — setProvider
-  Client → setProvider(jobId, winnerAddress, "")
-    → hook.beforeAction: verify auction closed, address == winner. Revert if not.
+Step 4 — setProvider (hook verifies winning bid signature)
+  Client → setProvider(jobId, winnerAddress, optParams=abi.encode(bidAmount, signature))
+    → hook.beforeAction: verify deadline passed, recover signer from signature,
+      validate signer == provider, store committed bidAmount. Revert if invalid.
     → core: job.provider = winnerAddress
-    → hook.afterAction: mark auction finalised (no further setProvider possible).
+    → hook.afterAction: mark bidding finalised (no further setProvider possible).
 
 Step 5 — job continues normally
-  Client → setBudget(jobId, amount, "")
   Client → fund(jobId, "")
   Provider → submit(jobId, deliverable, "")
   Evaluator → complete(jobId, reason, "")
 ```
 
-**Key property:** The client cannot assign a provider that did not win the auction. The hook is the authority on the selection outcome.
+**Key property:** The client cannot fabricate a provider commitment. The hook verifies the chosen provider actually signed a bid at the claimed price. The client is incentivised to pick the lowest bidder since they are the one paying.
 
 ---
 
