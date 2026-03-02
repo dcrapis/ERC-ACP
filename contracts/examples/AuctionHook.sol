@@ -15,43 +15,21 @@ import "../BaseACPHook.sol";
  * with the winning address; the hook validates the winner and finalises the
  * auction — preventing the client from picking an arbitrary address.
  *
- * ROLES
- * -----
- *  - Client: creates the job (provider = address(0)), opens the auction.
- *  - Bidders (agents): call placeBid on this hook during the bidding window.
- *  - Client: calls closeAuction to lock in the winner, then calls setProvider
- *    on ACPMinimal with the winner address.
- *  - ACP hook: preSetProvider validates the address matches the auction winner.
- *    postSetProvider marks the auction as finalised.
- *
- * FLOW
+ * FLOW (hook callbacks marked with →)
  * ----
  *  1. createJob(provider=0, evaluator, expiredAt, description, hook=this)
- *     └─ Job created in Open state with no provider.
- *        Client calls openAuction(jobId, deadline) on this hook.
+ *  2. Client calls openAuction(jobId, deadline) on this hook.
+ *  3. Bidders call placeBid(jobId, amount) during the bidding window.
+ *  4. After deadline, client calls closeAuction(jobId). Winner determined.
+ *  5. Client calls setProvider(jobId, winner, ""):
+ *     → _preSetProvider: validates address == auction winner. Reverts if not.
+ *     → AgenticCommerceHooked: sets job.provider = winner.
+ *     → _postSetProvider: marks auction as finalised.
+ *  6. Job continues normally: setBudget → fund → submit → complete.
  *
- *  2. Bidders call placeBid(jobId) during the bidding window.
- *     └─ Hook records each bid (bidder address + bid amount).
- *        (In this example bids are a simple lowest-price-wins ranking;
- *         other auction types are straightforward extensions.)
- *
- *  3. After deadline, client calls closeAuction(jobId).
- *     └─ Hook picks the lowest bidder as winner and stores winnerFor[jobId].
- *
- *  4. setProvider(jobId, winner, optParams: "")   [called by client on ACPMinimal]
- *     └─ preSetProvider:  validate provider_ == winnerFor[jobId]. Revert if not.
- *     └─ ACPMinimal:      set job.provider = winner.
- *     └─ postSetProvider: mark auction as finalised.
- *
- *  5. Job continues normally: setBudget → fund → submit → complete.
- *
- * SECURITY NOTES
- * --------------
- *  - Only the client may open or close an auction (enforced here).
- *  - preSetProvider enforces the winner — the client cannot assign a random address.
- *  - Bids are publicly visible on-chain; for sealed bids, use a commit-reveal
- *    extension (not shown here, to keep the example minimal).
- *  - A real auction would also handle bid deposits and refunds.
+ * NOTE: openAuction, placeBid, closeAuction are direct calls to this hook
+ * (the auction system), not ACP callbacks. The hook callbacks only fire at
+ * setProvider to enforce the auction outcome.
  */
 contract AuctionHook is BaseACPHook {
 
@@ -60,7 +38,7 @@ contract AuctionHook is BaseACPHook {
         bool closed;
         bool finalised;
         address winner;
-        uint256 winningBid; // lowest bid amount wins
+        uint256 winningBid;
     }
 
     struct Bid {
@@ -68,12 +46,9 @@ contract AuctionHook is BaseACPHook {
         uint256 amount;
     }
 
-    address public immutable acpMinimal;
-
     mapping(uint256 => Auction) public auctions;
     mapping(uint256 => Bid[]) public bids;
 
-    error OnlyACPMinimal();
     error OnlyClient();
     error AuctionNotOpen();
     error AuctionStillOpen();
@@ -82,32 +57,18 @@ contract AuctionHook is BaseACPHook {
     error AuctionAlreadyFinalised();
     error NotTheWinner();
     error NoBids();
-    error ZeroAddress();
     error DeadlineMustBeFuture();
 
-    modifier onlyACP() {
-        if (msg.sender != acpMinimal) revert OnlyACPMinimal();
-        _;
-    }
-
-    constructor(address acpMinimal_) {
-        if (acpMinimal_ == address(0)) revert ZeroAddress();
-        acpMinimal = acpMinimal_;
-    }
+    constructor(address acpContract_) BaseACPHook(acpContract_) {}
 
     // -------------------------------------------------------------------------
     // Auction management (called directly by client / bidders)
     // -------------------------------------------------------------------------
 
-    /**
-     * @notice Client opens a bidding window for a job.
-     * @param jobId   The ACP job ID.
-     * @param deadline Unix timestamp after which no more bids are accepted.
-     */
     function openAuction(uint256 jobId, uint256 deadline) external {
         _assertClient(jobId);
         if (deadline <= block.timestamp) revert DeadlineMustBeFuture();
-        if (auctions[jobId].deadline != 0) revert AuctionAlreadyClosed(); // already opened
+        if (auctions[jobId].deadline != 0) revert AuctionAlreadyClosed();
         auctions[jobId] = Auction({
             deadline: deadline,
             closed: false,
@@ -117,11 +78,6 @@ contract AuctionHook is BaseACPHook {
         });
     }
 
-    /**
-     * @notice Bidder places a bid. Lower amount = more competitive.
-     * @param jobId     The ACP job ID.
-     * @param amount    Bid amount (e.g. the fee the bidder will accept).
-     */
     function placeBid(uint256 jobId, uint256 amount) external {
         Auction storage a = auctions[jobId];
         if (a.deadline == 0 || a.closed) revert AuctionNotOpen();
@@ -129,10 +85,6 @@ contract AuctionHook is BaseACPHook {
         bids[jobId].push(Bid({bidder: msg.sender, amount: amount}));
     }
 
-    /**
-     * @notice Client closes the auction and picks the lowest bidder as winner.
-     * @param jobId The ACP job ID.
-     */
     function closeAuction(uint256 jobId) external {
         _assertClient(jobId);
         Auction storage a = auctions[jobId];
@@ -143,7 +95,6 @@ contract AuctionHook is BaseACPHook {
 
         a.closed = true;
 
-        // Pick winner: lowest bid amount.
         Bid[] storage b = bids[jobId];
         address winner = b[0].bidder;
         uint256 winningBid = b[0].amount;
@@ -158,25 +109,17 @@ contract AuctionHook is BaseACPHook {
     }
 
     // -------------------------------------------------------------------------
-    // IACPHook callbacks
+    // Hook callbacks (called by AgenticCommerceHooked via beforeAction/afterAction)
     // -------------------------------------------------------------------------
 
-    /**
-     * @notice Called by ACPMinimal before setProvider.
-     *         Validates that the proposed provider is the auction winner.
-     */
-    function preSetProvider(uint256 jobId, address provider, bytes calldata) external override onlyACP {
+    function _preSetProvider(uint256 jobId, address provider_, bytes memory) internal override {
         Auction storage a = auctions[jobId];
         if (!a.closed) revert AuctionNotClosed();
         if (a.finalised) revert AuctionAlreadyFinalised();
-        if (provider != a.winner) revert NotTheWinner();
+        if (provider_ != a.winner) revert NotTheWinner();
     }
 
-    /**
-     * @notice Called by ACPMinimal after setProvider.
-     *         Marks the auction as finalised — no further setProvider calls allowed.
-     */
-    function postSetProvider(uint256 jobId, address, bytes calldata) external override onlyACP {
+    function _postSetProvider(uint256 jobId, address, bytes memory) internal override {
         auctions[jobId].finalised = true;
     }
 
@@ -189,13 +132,7 @@ contract AuctionHook is BaseACPHook {
     }
 
     function _assertClient(uint256 jobId) internal view {
-        (bool ok, bytes memory data) = acpMinimal.staticcall(
-            abi.encodeWithSignature("getJob(uint256)", jobId)
-        );
-        require(ok, "getJob failed");
-        (, address client,,,,,,,,) = abi.decode(
-            data, (uint256, address, address, address, address, string, uint256, uint256, uint8, bool)
-        );
+        address client = _getJobClient(jobId);
         if (msg.sender != client) revert OnlyClient();
     }
 }

@@ -3,43 +3,32 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IACPHook
- * @dev Interface for ERC-ACP-Minimal hook contracts. Implementations receive
- *      before/after callbacks on core job functions. Deploy a contract that
- *      implements this interface and pass its address to createJob.
+ * @dev Interface for ACP hook contracts. Implementations receive before/after
+ *      callbacks on core job functions.
  *
- *      Each hook function MAY revert to block the action (before hooks) or
- *      roll back the transaction (after hooks).
+ *      The `selector` identifies which core function is being called (e.g.
+ *      AgenticCommerceHooked.fund.selector). The `data` parameter contains
+ *      function-specific parameters encoded as bytes (see documentation for
+ *      encoding per selector).
  *
- *      Use BaseACPHook for a no-op base that you can selectively override.
+ *      This interface is intentionally minimal (two functions) so that it remains
+ *      stable as the core protocol evolves — new hookable functions simply produce
+ *      new selector values without changing this interface.
+ *
+ *      For convenience, inherit from BaseACPHook which routes selectors to named
+ *      virtual functions (e.g. _preFund, _postComplete) so you only override
+ *      what you need.
  */
 interface IACPHook {
-    /// @dev Called before setBudget executes. Seller commits transfer params here.
-    function preSetBudget(uint256 jobId, bytes calldata optParams) external;
+    /// @dev Called before the core function executes. MAY revert to block the action.
+    /// @param jobId The job ID.
+    /// @param selector The function selector of the core function being called.
+    /// @param data Encoded function-specific parameters (see BaseACPHook for decoding).
+    function beforeAction(uint256 jobId, bytes4 selector, bytes calldata data) external;
 
-    /// @dev Called after setBudget executes. Hook may store commitment confirmation.
-    function postSetBudget(uint256 jobId, bytes calldata optParams) external;
-
-    /// @dev Called before setProvider executes. Hook may validate provider (e.g. auction winner check).
-    function preSetProvider(uint256 jobId, address provider, bytes calldata optParams) external;
-
-    /// @dev Called after setProvider executes. Hook may finalize selection logic (e.g. close auction).
-    function postSetProvider(uint256 jobId, address provider, bytes calldata optParams) external;
-
-    /// @dev Called before fund executes. Hook may validate buyer intent against seller's committed params.
-    function preFund(uint256 jobId, bytes calldata optParams) external;
-
-    /// @dev Called after fund executes. Hook may execute side effects (e.g. atomic token transfer, insurance policy registration).
-    function postFund(uint256 jobId, bytes calldata optParams) external;
-
-    /// @dev Called before complete executes. Hook may run pre-completion checks (e.g. insurer sign-off).
-    function preComplete(uint256 jobId, bytes32 reason) external;
-
-    /// @dev Called after complete executes. Hook may trigger post-completion logic (e.g. close insurance policy).
-    function postComplete(uint256 jobId, bytes32 reason) external;
-
-    /// @dev Called before reject executes. Hook may run pre-rejection checks.
-    function preReject(uint256 jobId, bytes32 reason) external;
-
-    /// @dev Called after reject executes. Hook may trigger post-rejection logic (e.g. insurance claim payout).
-    function postReject(uint256 jobId, bytes32 reason) external;
+    /// @dev Called after the core function completes. MAY revert to roll back the transaction.
+    /// @param jobId The job ID.
+    /// @param selector The function selector of the core function being called.
+    /// @param data Encoded function-specific parameters (see BaseACPHook for decoding).
+    function afterAction(uint256 jobId, bytes4 selector, bytes calldata data) external;
 }
