@@ -182,6 +182,185 @@ Implementations SHOULD emit at least:
 - Tokens: Use SafeERC20 or equivalent for ERC-20.
 - Evaluator MUST be set at creation; if “client completes”, pass `evaluator = client`.
 
+## Hooks (Extension)
+
+Implementations MAY support an optional **hook** contract per job. A hook is an address stored on the job at creation (`createJob(..., hook)`). When set, `ACPMinimal` calls into the hook before and after specific core functions, forwarding `optParams` for context. The hook MAY revert to block or roll back the action.
+
+Hooks enable powerful extensions without changing the core protocol. Implementors inherit `BaseACPHook` (all no-ops) and override only what they need.
+
+### Hook Interface
+
+```solidity
+interface IACPHook {
+    function preSetBudget(uint256 jobId, bytes calldata optParams) external;
+    function postSetBudget(uint256 jobId, bytes calldata optParams) external;
+    function preSetProvider(uint256 jobId, address provider, bytes calldata optParams) external;
+    function postSetProvider(uint256 jobId, address provider, bytes calldata optParams) external;
+    function preFund(uint256 jobId, bytes calldata optParams) external;
+    function postFund(uint256 jobId, bytes calldata optParams) external;
+    function preComplete(uint256 jobId, bytes32 reason) external;
+    function postComplete(uint256 jobId, bytes32 reason) external;
+    function preReject(uint256 jobId, bytes32 reason) external;
+    function postReject(uint256 jobId, bytes32 reason) external;
+}
+```
+
+### Hook Call Points in ACPMinimal
+
+| Function | Hook calls |
+|----------|-----------|
+| `setBudget(jobId, amount, optParams)` | `preSetBudget` → set budget → `postSetBudget` |
+| `setProvider(jobId, provider, optParams)` | `preSetProvider` → set provider → `postSetProvider` |
+| `fund(jobId, optParams)` | `preFund` → escrow → `postFund` |
+| `complete(jobId, reason)` | `preComplete` → release escrow → `postComplete` |
+| `reject(jobId, reason)` | `preReject` → refund → `postReject` |
+| `submit`, `claimRefund` | No hook calls |
+
+---
+
+### Example 1 — Fund Transfer Hook
+
+**Problem:** A client hires a payment agent whose job is to move tokens on the client's behalf. The agent fee (escrow) and the side token transfer must either both succeed or both revert.
+
+**Solution:** A `FundTransferHook` that (a) lets the seller commit the transfer params at `setBudget` time and (b) executes the transfer atomically inside `postFund`.
+
+**Why the split between `setBudget` and `fund` matters:** `setBudget` is called by the **seller (provider/agent)** — they commit their fee and the transfer destination + amount. `fund` is called by the **buyer (client)** — but they cannot alter the transfer params because the hook already has the seller's binding commitment. This prevents a dishonest buyer from redirecting or undercutting the transfer.
+
+```
+Step 1 — createJob
+  Client → ACPMinimal.createJob(provider, evaluator, expiredAt, desc, hook=FundTransferHook)
+  ACPMinimal: job created (Open), hook address stored on job.
+
+Step 2 — setBudget  [called by SELLER / provider]
+  Provider → ACPMinimal.setBudget(jobId, agentFee, optParams: abi.encode(dest, transferAmount))
+    → hook.preSetBudget(jobId, optParams)
+         FundTransferHook: decode optParams, store {dest, transferAmount} as commitment for jobId.
+    → ACPMinimal: job.budget = agentFee
+    → hook.postSetBudget(jobId, optParams)   [no-op]
+
+Step 3 — fund  [called by BUYER / client]
+  Client must approve: ACPMinimal for agentFee, FundTransferHook for transferAmount.
+  Client → ACPMinimal.fund(jobId, optParams: "")
+    → hook.preFund(jobId, optParams)
+         FundTransferHook: read commitment, verify client has approved hook for transferAmount. Revert if not.
+    → ACPMinimal: pull agentFee from client into escrow, set status = Funded.
+    → hook.postFund(jobId, optParams)
+         FundTransferHook: pull transferAmount from client, forward to dest. Delete commitment (no replay).
+
+Step 4 — work happens off-chain
+
+Step 5 — submit / complete
+  Provider → ACPMinimal.submit(jobId)
+  Evaluator → ACPMinimal.complete(jobId, reason)
+    ACPMinimal: release escrowed agentFee to provider (minus platform fee).
+```
+
+**Key property:** Atomicity. The client cannot fund the job without the side transfer executing, and the side transfer cannot execute without the job being funded.
+
+---
+
+### Example 2 — Auction / Bidding Hook
+
+**Problem:** A client wants to hire the best agent for a job but does not know upfront who to assign. The selection should be determined by an open bidding process, not unilaterally by the client after the fact.
+
+**Solution:** An `AuctionHook` that manages a bidding window. `preSetProvider` validates that the address the client submits is the auction winner — the hook enforces the outcome.
+
+```
+Step 1 — createJob
+  Client → ACPMinimal.createJob(provider=0, evaluator, expiredAt, desc, hook=AuctionHook)
+  ACPMinimal: job created (Open), provider = address(0).
+  Client → AuctionHook.openAuction(jobId, deadline)
+  AuctionHook: bidding window opened until deadline.
+
+Step 2 — bidding  [called directly on AuctionHook by agents/providers]
+  AgentA → AuctionHook.placeBid(jobId, bidAmount)
+  AgentB → AuctionHook.placeBid(jobId, bidAmount)
+  ...
+  AuctionHook: records all bids. ACP contract is unaware of bids.
+
+Step 3 — close auction  [after deadline]
+  Client → AuctionHook.closeAuction(jobId)
+  AuctionHook: picks winner (e.g. lowest bid), stores winnerFor[jobId].
+
+Step 4 — setProvider  [called by client on ACPMinimal]
+  Client → ACPMinimal.setProvider(jobId, winnerAddress, optParams: "")
+    → hook.preSetProvider(jobId, winnerAddress, optParams)
+         AuctionHook: verify auction is closed, verify winnerAddress == winner. Revert if not.
+    → ACPMinimal: job.provider = winnerAddress
+    → hook.postSetProvider(jobId, winnerAddress, optParams)
+         AuctionHook: mark auction as finalised (no further setProvider possible).
+
+Step 5 — job continues normally
+  Provider → ACPMinimal.setBudget(jobId, amount, "")   [no hook needed here]
+  Client   → ACPMinimal.fund(jobId, "")
+  Provider → ACPMinimal.submit(jobId)
+  Evaluator → ACPMinimal.complete(jobId, reason)
+```
+
+**Key property:** The client cannot assign a provider that did not win the auction. The hook is the authority on the selection outcome.
+
+---
+
+---
+
+### Example 3 — Insurance Hook *(conceptual)*
+
+> **Note:** This example illustrates the hook composition pattern. A production insurance product would require actuarial pricing, oracle integration, dispute resolution, and regulatory consideration. The logic here is intentionally simplified.
+
+**Problem:** A client wants protection in case an agent fails to deliver. If the job is rejected, they should receive a payout on top of their escrow refund. If the job completes successfully, the insurer keeps the premium.
+
+**Solution:** An `InsuranceHook` that collects a premium at `fund` time, keeps it on completion, and pays out coverage on rejection.
+
+```
+Step 1 — createJob
+  Client → ACPMinimal.createJob(provider, evaluator, expiredAt, desc, hook=InsuranceHook)
+  ACPMinimal: job created (Open), hook address stored on job.
+
+Step 2 — setBudget  [called by seller/provider]
+  Provider → ACPMinimal.setBudget(jobId, agentFee, optParams: abi.encode(premium, coverage))
+    → hook.preSetBudget(jobId, optParams)
+         InsuranceHook: decode and store {premium, coverage} as policy for jobId.
+    → ACPMinimal: job.budget = agentFee
+    → hook.postSetBudget(jobId, optParams)   [no-op]
+
+Step 3 — fund  [called by BUYER / client]
+  Client must approve: ACPMinimal for agentFee, InsuranceHook for premium.
+  Client → ACPMinimal.fund(jobId, optParams: "")
+    → hook.preFund(jobId, optParams)
+         InsuranceHook: verify client has approved hook for premium. Revert if not.
+    → ACPMinimal: pull agentFee from client into escrow, set Funded.
+    → hook.postFund(jobId, optParams)
+         InsuranceHook: pull premium from client, send to insurer treasury. Policy activated.
+
+Step 4 — work happens off-chain
+
+Step 5a — HAPPY PATH: complete(jobId, reason)
+  Evaluator → ACPMinimal.complete(jobId, reason)
+    → hook.preComplete(jobId, reason)   [no-op]
+    → ACPMinimal: release escrowed agentFee to provider.
+    → hook.postComplete(jobId, reason)
+         InsuranceHook: close policy. Premium stays with insurer. No claim.
+
+Step 5b — CLAIM PATH: reject(jobId, reason)
+  Evaluator → ACPMinimal.reject(jobId, reason)
+    → hook.preReject(jobId, reason)   [no-op]
+    → ACPMinimal: refund escrowed agentFee to client.
+    → hook.postReject(jobId, reason)
+         InsuranceHook: insurer pays coverage amount to client. Policy closed.
+         Client receives: escrow refund (from ACP) + coverage (from insurer).
+```
+
+**Key property:** The client's downside on a failed job is bounded. The insurer takes the premium risk in exchange for covering the gap between the refund and the expected outcome. The hook composes cleanly on top of the core lifecycle — no changes to `ACPMinimal` are needed.
+
+---
+
+### Hook Security Considerations
+
+- Hooks are **trusted** contracts. A malicious hook can revert valid actions or execute arbitrary logic in `post*` callbacks. Clients SHOULD audit or use well-known hook implementations.
+- Hook `post*` callbacks run after state changes but within the same transaction. If a `post*` callback reverts, the entire transaction (including the core state change) is rolled back.
+- `onlyACP` modifiers on hooks are RECOMMENDED so that hook functions cannot be called directly by external actors.
+- Hooks SHOULD NOT be upgradeable after a job is created, as this would allow the hook to change behaviour mid-job.
+
 ## Rationale
 
 - **Single attester after submission**: Once Submitted, only the evaluator can complete or reject; the client cannot pull funds back unilaterally, so the provider is protected after starting work. Evaluator = client covers the “no third party” case.

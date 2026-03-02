@@ -82,15 +82,14 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         platformTreasury = treasury_;
     }
 
-    function _beforeHook(Job storage job, bytes4 selector, bytes calldata optParams) internal {
-        if (job.hook != address(0)) {
-            IACPHook(job.hook).beforeAction(job.id, selector, optParams);
-        }
-    }
-
-    function _afterHook(Job storage job, bytes4 selector, bytes calldata optParams) internal {
-        if (job.hook != address(0)) {
-            IACPHook(job.hook).afterAction(job.id, selector, optParams);
+    function _callHook(bytes memory call_, address hook_) internal {
+        if (hook_ == address(0)) return;
+        (bool ok, bytes memory ret) = hook_.call(call_);
+        if (!ok) {
+            if (ret.length > 0) {
+                assembly { revert(add(ret, 32), mload(ret)) }
+            }
+            revert("Hook reverted");
         }
     }
 
@@ -115,26 +114,29 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     }
 
     /// @dev Client sets provider when job was created with provider == address(0). Must be set before fund.
-    function setProvider(uint256 jobId, address provider_) external {
+    ///      optParams is forwarded to the hook (e.g. auction proof / winning bid signature).
+    function setProvider(uint256 jobId, address provider_, bytes calldata optParams) external {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
         if (msg.sender != job.client) revert Unauthorized();
         if (job.provider != address(0)) revert WrongStatus(); // already set
         if (provider_ == address(0)) revert ZeroAddress();
+        _callHook(abi.encodeCall(IACPHook.preSetProvider, (jobId, provider_, optParams)), job.hook);
         job.provider = provider_;
         emit ProviderSet(jobId, provider_);
+        _callHook(abi.encodeCall(IACPHook.postSetProvider, (jobId, provider_, optParams)), job.hook);
     }
 
     function setBudget(uint256 jobId, uint256 amount, bytes calldata optParams) external {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
-        if (msg.sender != job.client) revert Unauthorized();
-        _beforeHook(job, this.setBudget.selector, optParams);
+        if (msg.sender != job.provider) revert Unauthorized();
+        _callHook(abi.encodeCall(IACPHook.preSetBudget, (jobId, optParams)), job.hook);
         job.budget = amount;
         emit BudgetSet(jobId, amount);
-        _afterHook(job, this.setBudget.selector, optParams);
+        _callHook(abi.encodeCall(IACPHook.postSetBudget, (jobId, optParams)), job.hook);
     }
 
     function fund(uint256 jobId, bytes calldata optParams) external nonReentrant {
@@ -144,11 +146,11 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         if (msg.sender != job.client) revert Unauthorized();
         if (job.provider == address(0)) revert ProviderNotSet();
         if (job.budget == 0) revert ZeroBudget();
-        _beforeHook(job, this.fund.selector, optParams);
+        _callHook(abi.encodeCall(IACPHook.preFund, (jobId, optParams)), job.hook);
         job.status = JobStatus.Funded;
         paymentToken.safeTransferFrom(job.client, address(this), job.budget);
         emit JobFunded(jobId, job.client, job.budget);
-        _afterHook(job, this.fund.selector, optParams);
+        _callHook(abi.encodeCall(IACPHook.postFund, (jobId, optParams)), job.hook);
     }
 
     /// @dev Provider signals they have taken the job (flag only; no state change to lifecycle).
@@ -163,23 +165,21 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
     }
 
     /// @dev Provider submits work, moving the job from Funded to Submitted for evaluator review.
-    function submit(uint256 jobId, bytes calldata optParams) external {
+    function submit(uint256 jobId) external {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Funded) revert WrongStatus();
         if (msg.sender != job.provider) revert Unauthorized();
-        _beforeHook(job, this.submit.selector, optParams);
         job.status = JobStatus.Submitted;
         emit JobSubmitted(jobId, msg.sender);
-        _afterHook(job, this.submit.selector, optParams);
     }
 
-    function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
+    function complete(uint256 jobId, bytes32 reason) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Submitted) revert WrongStatus();
         if (msg.sender != job.evaluator) revert Unauthorized();
-        _beforeHook(job, this.complete.selector, optParams);
+        _callHook(abi.encodeCall(IACPHook.preComplete, (jobId, reason)), job.hook);
         job.status = JobStatus.Completed;
         uint256 amount = job.budget;
         uint256 fee = (amount * platformFeeBP) / 10000;
@@ -192,11 +192,11 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         }
         emit JobCompleted(jobId, msg.sender, reason);
         emit PaymentReleased(jobId, job.provider, net);
-        _afterHook(job, this.complete.selector, optParams);
+        _callHook(abi.encodeCall(IACPHook.postComplete, (jobId, reason)), job.hook);
     }
 
     /// @dev Client may reject only when Open; evaluator may reject when Funded or Submitted (refunds client).
-    function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
+    function reject(uint256 jobId, bytes32 reason) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status == JobStatus.Open) {
@@ -206,7 +206,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
         } else {
             revert WrongStatus();
         }
-        _beforeHook(job, this.reject.selector, optParams);
+        _callHook(abi.encodeCall(IACPHook.preReject, (jobId, reason)), job.hook);
         JobStatus prev = job.status;
         job.status = JobStatus.Rejected;
         if ((prev == JobStatus.Funded || prev == JobStatus.Submitted) && job.budget > 0) {
@@ -214,7 +214,7 @@ contract ACPMinimal is AccessControl, ReentrancyGuard {
             emit Refunded(jobId, job.client, job.budget);
         }
         emit JobRejected(jobId, msg.sender, reason);
-        _afterHook(job, this.reject.selector, optParams);
+        _callHook(abi.encodeCall(IACPHook.postReject, (jobId, reason)), job.hook);
     }
 
     function claimRefund(uint256 jobId) external nonReentrant {
