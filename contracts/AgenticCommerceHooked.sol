@@ -164,14 +164,17 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
         _afterHook(job.hook, jobId, msg.sig, optParams);
     }
 
-    /// @dev Provider submits work, moving the job from Funded to Submitted. Not hookable.
-    function submit(uint256 jobId, bytes32 deliverable) external {
+    /// @dev Provider submits work, moving the job from Funded to Submitted.
+    function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Funded) revert WrongStatus();
         if (msg.sender != job.provider) revert Unauthorized();
+        bytes memory data = abi.encode(deliverable, optParams);
+        _beforeHook(job.hook, jobId, msg.sig, data);
         job.status = JobStatus.Submitted;
         emit JobSubmitted(jobId, msg.sender, deliverable);
+        _afterHook(job.hook, jobId, msg.sig, data);
     }
 
     function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {

@@ -88,8 +88,8 @@ Called by client. SHALL revert if job is not Open, current `job.provider != addr
 Called by client. Sets `job.budget = amount`. SHALL revert if job is not Open or caller is not client. `optParams` forwarded to hook if set.
 - **fund(jobId, optParams?)**
 Called by client. SHALL revert if job is not Open, caller is not client, budget is zero, or **provider is not set** (`job.provider == address(0)`). SHALL transfer `job.budget` of the payment token from client to the contract (escrow) and set status to Funded. `optParams` forwarded to hook if set.
-- **submit(jobId, deliverable)**
-Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. `deliverable` (`bytes32`) is a reference to submitted work (e.g. hash of off-chain deliverable, IPFS CID, attestation commitment). SHALL emit an event including `deliverable` (e.g. JobSubmitted). Not hookable.
+- **submit(jobId, deliverable, optParams?)**
+Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. `deliverable` (`bytes32`) is a reference to submitted work (e.g. hash of off-chain deliverable, IPFS CID, attestation commitment). SHALL emit an event including `deliverable` (e.g. JobSubmitted). `optParams` forwarded to hook if set.
 - **complete(jobId, reason, optParams?)**
 Called by evaluator only. SHALL revert if job is not Submitted or caller is not the job’s evaluator. SHALL set status to Completed. SHALL transfer escrowed funds to provider (minus optional platform fee to a configurable treasury). `reason` MAY be `bytes32(0)` or an attestation hash (OPTIONAL). SHALL emit an event including `reason` if provided. `optParams` forwarded to hook if set.
 - **reject(jobId, reason, optParams?)**
@@ -138,7 +138,7 @@ When a job has a hook set, the core contract SHALL call `hook.beforeAction(...)`
 | `setProvider`  | Yes      |
 | `setBudget`    | Yes      |
 | `fund`         | Yes      |
-| `submit`       | **No** — status change and event only, no policy hook needed |
+| `submit`       | Yes      |
 | `complete`     | Yes      |
 | `reject`       | Yes      |
 | `claimRefund`  | **No** — permissionless safety mechanism, SHALL NOT be hookable |
@@ -152,6 +152,7 @@ The `data` parameter passed to hooks contains the core function's parameters enc
 | `setProvider`  | `abi.encode(address provider, bytes optParams)`       |
 | `setBudget`    | `abi.encode(uint256 amount, bytes optParams)`         |
 | `fund`         | `optParams` (raw bytes)                               |
+| `submit`       | `abi.encode(bytes32 deliverable, bytes optParams)`    |
 | `complete`     | `abi.encode(bytes32 reason, bytes optParams)`         |
 | `reject`       | `abi.encode(bytes32 reason, bytes optParams)`         |
 
@@ -185,11 +186,11 @@ Implementations MAY provide a `BaseACPHook` that routes the generic `beforeActio
 
 ---
 
-#### Example 1 — Fund Transfer Hook
+#### Example 1 — Fund Transfer Hook (two-phase escrow)
 
-**Problem:** A client hires a payment agent whose job is to move tokens on the client's behalf. The agent fee (escrow) and the side token transfer must either both succeed or both revert.
+**Problem:** A client hires an agent to convert/bridge/swap tokens (e.g. USDC → DAI). The client provides capital to the provider, who uses it to produce output tokens. The hook must ensure the provider deposits the output tokens before the job completes, then release them to the designated buyer.
 
-**Solution:** A `FundTransferHook` that (a) stores a transfer commitment at `setBudget` time and (b) executes the transfer atomically inside the `afterAction` callback for `fund`.
+**Solution:** A `FundTransferHook` that (a) stores a transfer commitment at `setBudget`, (b) forwards capital to the provider at `fund`, (c) pulls output tokens from the provider at `submit`, and (d) releases them to the buyer at `complete`.
 
 ```
 Step 1 — createJob
@@ -197,27 +198,37 @@ Step 1 — createJob
   Job created (Open), hook address stored.
 
 Step 2 — setBudget
-  Client → setBudget(jobId, agentFee, optParams=abi.encode(dest, transferAmount))
-    → hook.beforeAction: decode optParams, store {dest, transferAmount} as commitment.
-    → core: job.budget = agentFee
-    → hook.afterAction: [no-op]
+  Client → setBudget(jobId, serviceFee, optParams=abi.encode(buyer, transferAmount))
+    → hook.beforeAction: decode optParams, store {buyer, transferAmount} as commitment.
+    → core: job.budget = serviceFee
 
 Step 3 — fund
-  Client approves: contract for agentFee, hook for transferAmount.
+  Client approves: core contract for serviceFee, hook for transferAmount.
   Client → fund(jobId, "")
     → hook.beforeAction: verify client approved hook for transferAmount. Revert if not.
-    → core: pull agentFee into escrow, set Funded.
-    → hook.afterAction: pull transferAmount from client, forward to dest. Delete commitment.
+    → core: pull serviceFee into escrow, set Funded.
+    → hook.afterAction: pull transferAmount from client, forward to provider (capital).
 
-Step 4 — work happens off-chain
+Step 4 — provider uses capital to produce output tokens
 
-Step 5 — submit + complete
-  Provider → submit(jobId, deliverable)
+Step 5 — submit
+  Provider approves hook for transferAmount (output tokens).
+  Provider → submit(jobId, deliverable, "")
+    → hook.beforeAction: pull transferAmount from provider into hook (escrow).
+    → core: set Submitted.
+
+Step 6 — complete
   Evaluator → complete(jobId, reason, "")
-    → core: release escrowed agentFee to provider (minus platform fee).
+    → core: release serviceFee to provider (minus platform fee).
+    → hook.afterAction: release transferAmount from hook to buyer.
+
+Recovery:
+  - reject: hook.afterAction returns escrowed tokens to provider (if deposited).
+  - expiry: claimRefund (not hookable) refunds serviceFee to client.
+    Provider calls recoverTokens(jobId) on hook to recover deposited tokens.
 ```
 
-**Key property:** Atomicity. The client cannot fund the job without the side transfer executing, and the side transfer cannot execute without the job being funded. Both succeed or both revert.
+**Key properties:** (1) The provider cannot submit without depositing output tokens. (2) The buyer only receives tokens when the evaluator completes the job. (3) On rejection or expiry, tokens are returned to the provider.
 
 ---
 
@@ -254,7 +265,7 @@ Step 4 — setProvider + setBudget (hook verifies winning bid signature and enfo
 
 Step 5 — job continues normally
   Client → fund(jobId, "")
-  Provider → submit(jobId, deliverable)
+  Provider → submit(jobId, deliverable, "")
   Evaluator → complete(jobId, reason, "")
 ```
 
