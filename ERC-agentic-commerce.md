@@ -310,7 +310,8 @@ Implementations SHOULD emit at least:
 - Once Funded, only the evaluator can reject, and only the provider can submit; the client cannot unilaterally withdraw, which protects the provider after they start work.
 - No dispute resolution or arbitration; reject/expire is final.
 - Single payment token per contract reduces attack surface; per-job tokens are an extension.
-- Hook contracts are client-supplied and trusted by the client; implementations SHOULD use a gas limit on hook calls to prevent griefing, and MUST NOT allow hooks to modify core escrow state directly. `claimRefund` is deliberately not hookable so that refunds after expiry cannot be blocked by a malicious hook.
+- **Hook gas limits** (for hooked implementations): Implementations SHOULD impose a gas limit on hook calls (e.g. `call{gas: HOOK_GAS_LIMIT}(...)`) to bound execution cost and prevent hooks from consuming unbounded gas. The specific limit is left to the implementation as gas costs vary across chains.
+- Hook contracts are client-supplied and trusted by the client; implementations MUST NOT allow hooks to modify core escrow state directly. `claimRefund` is deliberately not hookable so that refunds after expiry cannot be blocked by a malicious hook.
 
 ## Copyright
 
