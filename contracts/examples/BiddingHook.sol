@@ -32,7 +32,11 @@ import "../BaseACPHook.sol";
  *       validate signer == provider, store committed bidAmount.
  *     → core: job.provider = winnerAddress
  *     → _postSetProvider: mark bidding finalised.
- *  5. Job continues normally: fund → submit → complete.
+ *     Then: setBudget(jobId, bidAmount, "")
+ *     → _preSetBudget: enforce budget == committedAmount.
+ *  5. fund(jobId, "") — _preFund enforces budget == committedAmount (blocks
+ *     funding if client skipped the second setBudget).
+ *  6. Job continues normally: submit → complete.
  *
  * TRUST MODEL
  * -----------
@@ -60,17 +64,29 @@ contract BiddingHook is BaseACPHook {
     error BiddingAlreadyFinalized();
     error InvalidBidSignature();
     error NoBidDeadline();
+    error BudgetMismatch();
 
     constructor(address acpContract_) BaseACPHook(acpContract_) {}
 
     // --- Hook callbacks only (no direct external functions) ---
 
-    /// @dev Client opens bidding by passing deadline in setBudget optParams.
-    function _preSetBudget(uint256 jobId, uint256, bytes memory optParams) internal override {
+    /// @dev Two modes:
+    ///  1. Initial call (before provider): decode deadline from optParams, store it.
+    ///  2. Post-provider call (committedAmount set): enforce budget == committedAmount.
+    function _preSetBudget(uint256 jobId, uint256 amount, bytes memory optParams) internal override {
+        Bidding storage b = biddings[jobId];
+
+        // After provider selected: enforce budget matches the winning bid
+        if (b.committedAmount > 0) {
+            if (amount != b.committedAmount) revert BudgetMismatch();
+            return;
+        }
+
+        // Initial call: store bidding deadline from optParams
         if (optParams.length == 0) return;
         uint256 deadline = abi.decode(optParams, (uint256));
         if (deadline <= block.timestamp) revert DeadlineMustBeFuture();
-        biddings[jobId].deadline = deadline;
+        b.deadline = deadline;
     }
 
     /// @dev Verify signed bid from provider. Client passes (bidAmount, signature) in optParams.
@@ -91,7 +107,28 @@ contract BiddingHook is BaseACPHook {
         b.committedAmount = bidAmount;
     }
 
+    /// @dev Block funding if budget hasn't been set to the committed bid amount.
+    function _preFund(uint256 jobId, bytes memory) internal override {
+        Bidding storage b = biddings[jobId];
+        if (b.committedAmount == 0) return; // no bidding for this job
+        uint256 budget = _getJobBudget(jobId);
+        if (budget != b.committedAmount) revert BudgetMismatch();
+    }
+
     function _postSetProvider(uint256 jobId, address, bytes memory) internal override {
         biddings[jobId].finalized = true;
+    }
+
+    // --- Helper --------------------------------------------------------------
+
+    function _getJobBudget(uint256 jobId) internal view returns (uint256 budget) {
+        (bool ok, bytes memory data) = acpContract.staticcall(
+            abi.encodeWithSignature("getJob(uint256)", jobId)
+        );
+        require(ok, "getJob failed");
+        // Job struct: (id, client, provider, evaluator, hook, description, budget, expiredAt, status)
+        (,,,,,, budget,,) = abi.decode(
+            data, (uint256, address, address, address, address, string, uint256, uint256, uint8)
+        );
     }
 }

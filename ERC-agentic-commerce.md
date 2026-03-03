@@ -88,8 +88,8 @@ Called by client. SHALL revert if job is not Open, current `job.provider != addr
 Called by client. Sets `job.budget = amount`. SHALL revert if job is not Open or caller is not client. `optParams` forwarded to hook if set.
 - **fund(jobId, optParams?)**
 Called by client. SHALL revert if job is not Open, caller is not client, budget is zero, or **provider is not set** (`job.provider == address(0)`). SHALL transfer `job.budget` of the payment token from client to the contract (escrow) and set status to Funded. `optParams` forwarded to hook if set.
-- **submit(jobId, deliverable, optParams?)**
-Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. `deliverable` (`bytes32`) is a reference to submitted work (e.g. hash of off-chain deliverable, IPFS CID, attestation commitment). SHALL emit an event including `deliverable` (e.g. JobSubmitted). `optParams` forwarded to hook if set.
+- **submit(jobId, deliverable)**
+Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. `deliverable` (`bytes32`) is a reference to submitted work (e.g. hash of off-chain deliverable, IPFS CID, attestation commitment). SHALL emit an event including `deliverable` (e.g. JobSubmitted). Not hookable.
 - **complete(jobId, reason, optParams?)**
 Called by evaluator only. SHALL revert if job is not Submitted or caller is not the job’s evaluator. SHALL set status to Completed. SHALL transfer escrowed funds to provider (minus optional platform fee to a configurable treasury). `reason` MAY be `bytes32(0)` or an attestation hash (OPTIONAL). SHALL emit an event including `reason` if provided. `optParams` forwarded to hook if set.
 - **reject(jobId, reason, optParams?)**
@@ -138,7 +138,7 @@ When a job has a hook set, the core contract SHALL call `hook.beforeAction(...)`
 | `setProvider`  | Yes      |
 | `setBudget`    | Yes      |
 | `fund`         | Yes      |
-| `submit`       | Yes      |
+| `submit`       | **No** — status change and event only, no policy hook needed |
 | `complete`     | Yes      |
 | `reject`       | Yes      |
 | `claimRefund`  | **No** — permissionless safety mechanism, SHALL NOT be hookable |
@@ -152,7 +152,6 @@ The `data` parameter passed to hooks contains the core function's parameters enc
 | `setProvider`  | `abi.encode(address provider, bytes optParams)`       |
 | `setBudget`    | `abi.encode(uint256 amount, bytes optParams)`         |
 | `fund`         | `optParams` (raw bytes)                               |
-| `submit`       | `abi.encode(bytes32 deliverable, bytes optParams)`    |
 | `complete`     | `abi.encode(bytes32 reason, bytes optParams)`         |
 | `reject`       | `abi.encode(bytes32 reason, bytes optParams)`         |
 
@@ -165,11 +164,12 @@ The `data` parameter passed to hooks contains the core function's parameters enc
 
 #### Hook security
 
-- Hooks are **trusted** contracts chosen by the client at job creation. A malicious hook can revert valid actions or execute arbitrary logic in after-callbacks. Clients SHOULD audit or use well-known hook implementations.
-- After-callbacks run after state changes but within the same transaction. If an after-callback reverts, the entire transaction (including the core state change) is rolled back.
+- Hooks are **trusted** contracts chosen by the client at job creation. A malicious or buggy hook can revert valid actions or execute arbitrary logic in callbacks. Clients SHOULD audit or use well-known hook implementations.
+- **Liveness:** A reverting hook can block all hookable actions for that job until `expiredAt`. This is by design — the hook is part of the job's policy. The guaranteed recovery path is `claimRefund` after expiry, which is deliberately **not hookable** so that refunds cannot be blocked.
+- **Atomicity:** After-callbacks run after state changes but within the same transaction. If an after-callback reverts, the entire transaction (including the core state change) is rolled back. This is intentional — it enables atomic multi-step flows (e.g. escrow funding + side token transfer must both succeed or both revert).
 - `onlyACP` modifiers on hooks are RECOMMENDED so that hook functions cannot be called directly by external actors.
 - Hooks SHOULD NOT be upgradeable after a job is created, as this would allow the hook to change behaviour mid-job.
-- `claimRefund` is deliberately not hookable so that refunds after expiry cannot be blocked by a malicious hook.
+- Implementations MAY maintain an allowlist or registry of audited hook contracts to reduce risk for clients.
 
 #### Convenience base contract (non-normative)
 
@@ -212,7 +212,7 @@ Step 3 — fund
 Step 4 — work happens off-chain
 
 Step 5 — submit + complete
-  Provider → submit(jobId, deliverable, "")
+  Provider → submit(jobId, deliverable)
   Evaluator → complete(jobId, reason, "")
     → core: release escrowed agentFee to provider (minus platform fee).
 ```
@@ -243,16 +243,18 @@ Step 3 — bidding happens OFF-CHAIN
   Client collects signed bids and selects the winner.
   Core contract is unaware of bids.
 
-Step 4 — setProvider (hook verifies winning bid signature)
+Step 4 — setProvider + setBudget (hook verifies winning bid signature and enforces budget)
   Client → setProvider(jobId, winnerAddress, optParams=abi.encode(bidAmount, signature))
     → hook.beforeAction: verify deadline passed, recover signer from signature,
       validate signer == provider, store committed bidAmount. Revert if invalid.
     → core: job.provider = winnerAddress
     → hook.afterAction: mark bidding finalised (no further setProvider possible).
+  Client → setBudget(jobId, bidAmount, "")
+    → hook.beforeAction: enforce budget == committedAmount. Revert if mismatch.
 
 Step 5 — job continues normally
   Client → fund(jobId, "")
-  Provider → submit(jobId, deliverable, "")
+  Provider → submit(jobId, deliverable)
   Evaluator → complete(jobId, reason, "")
 ```
 

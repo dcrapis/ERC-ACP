@@ -16,7 +16,6 @@ import "./IACPHook.sol";
  *        setProvider  : abi.encode(address provider, bytes optParams)
  *        setBudget    : abi.encode(uint256 amount, bytes optParams)
  *        fund         : optParams (raw bytes)
- *        submit       : abi.encode(bytes32 deliverable, bytes optParams)
  *        complete     : abi.encode(bytes32 reason, bytes optParams)
  *        reject       : abi.encode(bytes32 reason, bytes optParams)
  *
@@ -47,7 +46,6 @@ abstract contract BaseACPHook is IACPHook {
     bytes4 private constant SEL_SET_PROVIDER = bytes4(keccak256("setProvider(uint256,address,bytes)"));
     bytes4 private constant SEL_SET_BUDGET   = bytes4(keccak256("setBudget(uint256,uint256,bytes)"));
     bytes4 private constant SEL_FUND         = bytes4(keccak256("fund(uint256,bytes)"));
-    bytes4 private constant SEL_SUBMIT       = bytes4(keccak256("submit(uint256,bytes32,bytes)"));
     bytes4 private constant SEL_COMPLETE     = bytes4(keccak256("complete(uint256,bytes32,bytes)"));
     bytes4 private constant SEL_REJECT       = bytes4(keccak256("reject(uint256,bytes32,bytes)"));
 
@@ -62,9 +60,6 @@ abstract contract BaseACPHook is IACPHook {
             _preSetBudget(jobId, amount, optParams);
         } else if (selector == SEL_FUND) {
             _preFund(jobId, data);
-        } else if (selector == SEL_SUBMIT) {
-            (bytes32 deliverable, bytes memory optParams) = abi.decode(data, (bytes32, bytes));
-            _preSubmit(jobId, deliverable, optParams);
         } else if (selector == SEL_COMPLETE) {
             (bytes32 reason, bytes memory optParams) = abi.decode(data, (bytes32, bytes));
             _preComplete(jobId, reason, optParams);
@@ -83,9 +78,6 @@ abstract contract BaseACPHook is IACPHook {
             _postSetBudget(jobId, amount, optParams);
         } else if (selector == SEL_FUND) {
             _postFund(jobId, data);
-        } else if (selector == SEL_SUBMIT) {
-            (bytes32 deliverable, bytes memory optParams) = abi.decode(data, (bytes32, bytes));
-            _postSubmit(jobId, deliverable, optParams);
         } else if (selector == SEL_COMPLETE) {
             (bytes32 reason, bytes memory optParams) = abi.decode(data, (bytes32, bytes));
             _postComplete(jobId, reason, optParams);
@@ -105,9 +97,6 @@ abstract contract BaseACPHook is IACPHook {
 
     function _preFund(uint256 jobId, bytes memory optParams) internal virtual {}
     function _postFund(uint256 jobId, bytes memory optParams) internal virtual {}
-
-    function _preSubmit(uint256 jobId, bytes32 deliverable, bytes memory optParams) internal virtual {}
-    function _postSubmit(uint256 jobId, bytes32 deliverable, bytes memory optParams) internal virtual {}
 
     function _preComplete(uint256 jobId, bytes32 reason, bytes memory optParams) internal virtual {}
     function _postComplete(uint256 jobId, bytes32 reason, bytes memory optParams) internal virtual {}
