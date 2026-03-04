@@ -308,6 +308,12 @@ Implementations SHOULD emit at least:
 
 The following extensions are OPTIONAL and do not modify the core protocol. Implementations MAY adopt them independently.
 
+### Reputation / Attestation Interop (ERC-8004)
+
+_TODO: Define how ACP integrates with [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for on-chain reputation. Potential areas: evaluator attestations on complete/reject fed into ERC-8004 registries, provider reputation scores as pre-fund validation via hooks, evaluator selection based on reputation._
+
+---
+
 ### Meta-Transactions / Facilitator Relay (ERC-2771)
 
 To support gasless execution — where a client, provider, or evaluator signs an intent off-chain and a **facilitator** submits the transaction on their behalf — implementations SHOULD support [ERC-2771](https://eips.ethereum.org/EIPS/eip-2771) (Secure Protocol for Native Meta Transactions).
