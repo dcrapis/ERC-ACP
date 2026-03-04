@@ -24,7 +24,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ### State Machine
 
-A **job** has exactly one of five states:
+A **job** has exactly one of six states:
 
 
 | State         | Meaning                                                                                                           |
@@ -99,8 +99,8 @@ Callable when job is Funded or Submitted and `block.timestamp >= expiredAt`, or 
 
 ### Attestation
 
-- **complete(jobId, reason)**: `reason` is an optional attestation commitment (e.g. `bytes32` hash of off-chain evidence). Implementations MAY use `string` and hash it internally. Events SHOULD include `reason` for indexing and composition with reputation systems.
-- **reject(jobId, reason)**: Optional `reason` for audit; same treatment as above.
+- **complete(jobId, reason, optParams?)**: `reason` is an optional attestation commitment (e.g. `bytes32` hash of off-chain evidence). Implementations MAY use `string` and hash it internally. Events SHOULD include `reason` for indexing and composition with reputation systems. `optParams` forwarded to hook if set.
+- **reject(jobId, reason, optParams?)**: Optional `reason` for audit; same treatment as above. `optParams` forwarded to hook if set.
 
 ### Fees
 
@@ -204,7 +204,7 @@ Step 2 — setBudget
 
 Step 3 — fund
   Client approves: core contract for serviceFee, hook for transferAmount.
-  Client → fund(jobId, "")
+  Client → fund(jobId, serviceFee, "")
     → hook.beforeAction: verify client approved hook for transferAmount. Revert if not.
     → core: pull serviceFee into escrow, set Funded.
     → hook.afterAction: pull transferAmount from client, forward to provider (capital).
@@ -264,7 +264,7 @@ Step 4 — setProvider + setBudget (hook verifies winning bid signature and enfo
     → hook.beforeAction: enforce budget == committedAmount. Revert if mismatch.
 
 Step 5 — job continues normally
-  Client → fund(jobId, "")
+  Client → fund(jobId, bidAmount, "")
   Provider → submit(jobId, deliverable, "")
   Evaluator → complete(jobId, reason, "")
 ```
