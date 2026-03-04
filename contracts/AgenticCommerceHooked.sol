@@ -19,6 +19,7 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    uint256 public constant HOOK_GAS_LIMIT = 500_000;
 
     enum JobStatus {
         Open,
@@ -87,13 +88,13 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
 
     function _beforeHook(address hook, uint256 jobId, bytes4 selector, bytes memory data) internal {
         if (hook != address(0)) {
-            IACPHook(hook).beforeAction(jobId, selector, data);
+            IACPHook(hook).beforeAction{gas: HOOK_GAS_LIMIT}(jobId, selector, data);
         }
     }
 
     function _afterHook(address hook, uint256 jobId, bytes4 selector, bytes memory data) internal {
         if (hook != address(0)) {
-            IACPHook(hook).afterAction(jobId, selector, data);
+            IACPHook(hook).afterAction{gas: HOOK_GAS_LIMIT}(jobId, selector, data);
         }
     }
 
