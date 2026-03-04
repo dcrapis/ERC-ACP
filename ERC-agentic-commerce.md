@@ -304,6 +304,55 @@ Implementations SHOULD emit at least:
 - **Hooks over inheritance**: Optional hook contracts let integrators extend the protocol (validation, reputation, fees) without modifying or inheriting from the core contract. The core stays minimal; complexity lives in the hook.
 - **Generic hook interface**: The `IACPHook` interface uses just two functions (`beforeAction`/`afterAction`) with a selector parameter rather than named functions per action. This keeps the interface stable as the core protocol evolves — new hookable functions simply produce new selector values without changing the interface.
 
+## Extensions (OPTIONAL)
+
+The following extensions are OPTIONAL and do not modify the core protocol. Implementations MAY adopt them independently.
+
+### Reputation / Attestation Interop (ERC-8004)
+
+_TODO: Define how ACP integrates with [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for on-chain reputation. Potential areas: evaluator attestations on complete/reject fed into ERC-8004 registries, provider reputation scores as pre-fund validation via hooks, evaluator selection based on reputation._
+
+---
+
+### Meta-Transactions / Facilitator Relay (ERC-2771)
+
+To support gasless execution — where a client, provider, or evaluator signs an intent off-chain and a **facilitator** submits the transaction on their behalf — implementations SHOULD support [ERC-2771](https://eips.ethereum.org/EIPS/eip-2771) (Secure Protocol for Native Meta Transactions).
+
+**How it works:**
+
+1. A participant (client, provider, or evaluator) signs a meta-transaction off-chain (e.g. `createJob`, `fund`, `submit`).
+2. A facilitator submits the signed payload to a **trusted forwarder** contract.
+3. The forwarder verifies the signature and calls the ACP contract, appending the original signer's address.
+4. The ACP contract uses `_msgSender()` (from `ERC2771Context`) instead of `msg.sender` to identify the caller.
+
+**Implementation requirements:**
+
+- The ACP contract SHALL inherit `ERC2771Context` (or equivalent) and use `_msgSender()` for all authorization checks (`client`, `provider`, `evaluator`).
+- All role checks (e.g. "caller is client", "caller is provider") SHALL use `_msgSender()` rather than `msg.sender`.
+- The trusted forwarder address SHALL be set at deployment and SHOULD be immutable.
+
+```solidity
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+
+contract AgenticCommerce is ERC2771Context, ... {
+    constructor(address trustedForwarder, ...)
+        ERC2771Context(trustedForwarder) { ... }
+
+    // Example: fund() using _msgSender() instead of msg.sender
+    function fund(uint256 jobId) external {
+        Job storage job = jobs[jobId];
+        if (_msgSender() != job.client) revert Unauthorized();
+        // ...
+    }
+}
+```
+
+**Token approvals:** For functions that pull tokens (e.g. `fund`), the signer SHOULD use [ERC-2612](https://eips.ethereum.org/EIPS/eip-2612) (`permit`) to approve token spending via signature. The facilitator can then call `permit` and `fund` in a single transaction — no on-chain approval tx needed from the signer.
+
+**x402 compatibility:** This extension enables compatibility with HTTP-native payment protocols such as x402, where an AI agent signs payment intents off-chain and a payment facilitator handles on-chain execution. The agent only needs a private key and tokens — no gas, no RPC management, no chain-specific logic.
+
+---
+
 ## Security Considerations
 
 - Evaluator is trusted for completion and rejection once the job is Submitted; a malicious evaluator can complete or reject arbitrarily. Use reputation (e.g. ERC-8004) or staking for high-value jobs.
