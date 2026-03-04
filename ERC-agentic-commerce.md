@@ -52,7 +52,7 @@ No other transitions are valid.
 
 ### Roles
 
-- **Client**: Creates job (with optional description), may set provider via `setProvider(jobId, provider)` when job was created with no provider, sets budget with `setBudget(jobId, amount)`, funds escrow with `fund(jobId, expectedBudget)`, may reject **only when status is Open**. Receives refund on Rejected/Expired.
+- **Client**: Creates job (with description), may set provider via `setProvider(jobId, provider)` when job was created with no provider, sets budget with `setBudget(jobId, amount)`, funds escrow with `fund(jobId, expectedBudget)`, may reject **only when status is Open**. Receives refund on Rejected/Expired.
 - **Provider**: Set at creation or later via `setProvider`. May call `setBudget(jobId, amount)` to propose or negotiate a price. Calls `submit(jobId, deliverable)` when work is done to move the job from Funded to Submitted for evaluation. Receives payment when job is Completed. Does not call `complete` or `reject`.
 - **Evaluator**: Single address per job, set at creation. When status is Submitted, **only** the evaluator MAY call `complete(jobId, reason?)` or `reject(jobId, reason?)`. When status is Funded, the evaluator MAY call `reject(jobId, reason?)` (before submission). MAY be the client (e.g. `evaluator = client`) so the client can complete or reject the job without a third party, or MAY be a **smart contract** that performs arbitrary checks (e.g. verifying a zero‑knowledge proof or aggregating off‑chain signals) before deciding whether to call `complete` or `reject` on the job.
 
@@ -95,7 +95,7 @@ Called by evaluator only. SHALL revert if job is not Submitted or caller is not 
 - **reject(jobId, reason, optParams?)**
 Called by **client when job is Open** or by **evaluator when job is Funded or Submitted**. SHALL revert if job is not Open, Funded, or Submitted, or caller is not the client (when Open) or the evaluator (when Funded or Submitted). SHALL set status to Rejected. If Funded or Submitted, SHALL refund escrow to client. `reason` OPTIONAL. SHALL emit an event including `reason` and the caller (rejector) if provided. `optParams` forwarded to hook if set.
 - **claimRefund(jobId)**
-Callable when job is Funded or Submitted and `block.timestamp >= expiredAt`, or when job is already Rejected/Expired. SHALL transfer full escrow to client and set status to Expired if not already terminal. MAY restrict caller (e.g. client only) or allow anyone; the specification RECOMMENDS allowing anyone to trigger refund after expiry.
+Callable when job is Funded or Submitted and the job has expired (`block.timestamp >= expiredAt`). SHALL revert if job is not Funded or Submitted, or if the job has not yet expired. SHALL transfer full escrow to client and set status to Expired. MAY restrict caller (e.g. client only) or allow anyone; the specification RECOMMENDS allowing anyone to trigger refund after expiry.
 
 ### Attestation
 
@@ -299,7 +299,7 @@ Implementations SHOULD emit at least:
 - **Single attester after submission**: Once Submitted, only the evaluator can complete or reject; the client cannot pull funds back unilaterally, so the provider is protected after starting work. Evaluator = client covers the “no third party” case.
 - **Explicit submission**: The Submitted state gives the evaluator (and indexers/UIs) a clear signal that the provider considers work done and ready for evaluation, separating “funded and in progress” from “work delivered”.
 - **Minimal surface**: Attestation is the optional `reason` on complete/reject; no additional ledger is required.
-- **Four states + terminal**: Open, Funded, Submitted, and three terminal states are enough for “fund → work → submit → evaluate or refund”.
+- **Four states**: Open, Funded, Submitted, and Terminal (Completed, Rejected, or Expired) are enough for “fund → work → submit → evaluate or refund”.
 - **Expiry**: Refund after `expiredAt` gives client a way to reclaim funds without an explicit reject.
 - **Hooks over inheritance**: Optional hook contracts let integrators extend the protocol (validation, reputation, fees) without modifying or inheriting from the core contract. The core stays minimal; complexity lives in the hook.
 - **Generic hook interface**: The `IACPHook` interface uses just two functions (`beforeAction`/`afterAction`) with a selector parameter rather than named functions per action. This keeps the interface stable as the core protocol evolves — new hookable functions simply produce new selector values without changing the interface.
@@ -322,7 +322,7 @@ The following patterns are RECOMMENDED:
   - Implementations MAY emit ERC‑8004 compatible events or call ERC‑8004 registries when a job reaches a terminal state.
 
 - **Evaluator attestations**
-  - On `complete(jobId, reason)` and `reject(jobId, reason)`, the evaluator (which MAY be a contract) SHOULD:
+  - On `complete(jobId, reason, optParams?)` and `reject(jobId, reason, optParams?)`, the evaluator (which MAY be a contract) SHOULD:
     - produce an attestation or structured log that can be added to the ERC‑8004 **reputation registry** as feedback (e.g. “provider successfully completed job”, “job rejected for reason X”). Attestations MAY reference the job, parties, and `reason` (e.g. a hash of off‑chain evidence).
     - and/or post a proof to the ERC‑8004 **validation registry**, which a hook (or evaluator contract) then reads in order to decide whether to mark the job as `Completed` or `Rejected`.
   - Hooks MAY be used to call into ERC‑8004 registries in `afterAction` for `complete`/`reject`, keeping the core ACP contract unaware of the registry details.
@@ -367,9 +367,10 @@ contract AgenticCommerce is ERC2771Context, ... {
         ERC2771Context(trustedForwarder) { ... }
 
     // Example: fund() using _msgSender() instead of msg.sender
-    function fund(uint256 jobId) external {
+    function fund(uint256 jobId, uint256 expectedBudget) external {
         Job storage job = jobs[jobId];
         if (_msgSender() != job.client) revert Unauthorized();
+        if (job.budget != expectedBudget) revert BudgetMismatch();
         // ...
     }
 }
@@ -389,7 +390,7 @@ contract AgenticCommerce is ERC2771Context, ... {
 - Single payment token per contract reduces attack surface; per-job tokens are an extension.
 - **Hook gas limits** (for hooked implementations): Implementations SHOULD impose a gas limit on hook calls (e.g. `call{gas: HOOK_GAS_LIMIT}(...)`) to bound execution cost and prevent hooks from consuming unbounded gas. The specific limit is left to the implementation as gas costs vary across chains.
 - Hook contracts are client-supplied and trusted by the client; implementations MUST NOT allow hooks to modify core escrow state directly. `claimRefund` is deliberately not hookable so that refunds after expiry cannot be blocked by a malicious hook.
-- Jobs that use **advanced hooks** (e.g. two‑phase escrow / fund‑transfer hooks that custody additional tokens) are expected to have **more revert paths and tighter coupling** to external logic than plain, non‑hooked Agentic Commerce jobs. Such hooks SHOULD be reserved for agents and users who understand and accept this trade‑off; for most simple jobs, a non‑hooked or Profile A policy‑only hook is RECOMMENDED.
+- Jobs that use **advanced hooks** (e.g. two‑phase escrow / fund‑transfer hooks that custody additional tokens) are expected to have **more revert paths and tighter coupling** to external logic than plain, non‑hooked Agentic Commerce jobs. Such hooks SHOULD be reserved for agents and users who understand and accept this trade‑off; for most simple jobs, a non‑hooked or policy‑only hook (i.e. hooks that only perform validation and checks such as allowlists, KYC gates, or budget limits, without custodying additional tokens — see hook-profiles.md) is RECOMMENDED.
 
 ## Copyright
 
