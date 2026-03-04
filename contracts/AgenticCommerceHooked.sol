@@ -48,7 +48,7 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
     mapping(uint256 => Job) public jobs;
     uint256 public jobCounter;
 
-    event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt);
+    event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook);
     event ProviderSet(uint256 indexed jobId, address indexed provider);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
@@ -119,7 +119,7 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
             expiredAt: expiredAt,
             status: JobStatus.Open
         });
-        emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt);
+        emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt, hook);
         return jobId;
     }
 
