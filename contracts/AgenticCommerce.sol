@@ -60,6 +60,7 @@ contract AgenticCommerce is AccessControl, ReentrancyGuard {
     error ZeroAddress();
     error ExpiryTooShort();
     error ZeroBudget();
+    error BudgetMismatch();
     error ProviderNotSet();
 
     constructor(address paymentToken_, address treasury_) {
@@ -111,18 +112,19 @@ contract AgenticCommerce is AccessControl, ReentrancyGuard {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
-        if (msg.sender != job.client) revert Unauthorized();
+        if (msg.sender != job.client && msg.sender != job.provider) revert Unauthorized();
         job.budget = amount;
         emit BudgetSet(jobId, amount);
     }
 
-    function fund(uint256 jobId) external nonReentrant {
+    function fund(uint256 jobId, uint256 expectedBudget) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
         if (msg.sender != job.client) revert Unauthorized();
         if (job.provider == address(0)) revert ProviderNotSet();
         if (job.budget == 0) revert ZeroBudget();
+        if (job.budget != expectedBudget) revert BudgetMismatch();
         job.status = JobStatus.Funded;
         paymentToken.safeTransferFrom(job.client, address(this), job.budget);
         emit JobFunded(jobId, job.client, job.budget);

@@ -39,7 +39,7 @@ A **job** has exactly one of five states:
 
 Allowed transitions:
 
-- **Open → Funded**: Client calls `setBudget(jobId, amount)` then `fund(jobId)`; contract pulls `job.budget` from client into escrow.
+- **Open → Funded**: Client or provider calls `setBudget(jobId, amount)` to agree on price, then client calls `fund(jobId, expectedBudget)`; contract pulls `job.budget` from client into escrow.
 - **Open → Rejected**: Client calls `reject(jobId, reason?)`.
 - **Funded → Submitted**: Provider calls `submit(jobId, deliverable)`; signals that work has been completed and is ready for evaluation.
 - **Funded → Rejected**: Evaluator calls `reject(jobId, reason?)`; contract refunds client.
@@ -52,8 +52,8 @@ No other transitions are valid.
 
 ### Roles
 
-- **Client**: Creates job (with optional description), may set provider via `setProvider(jobId, provider)` when job was created with no provider, sets budget with `setBudget(jobId, amount)`, funds escrow with `fund(jobId)`, may reject **only when status is Open**. Receives refund on Rejected/Expired.
-- **Provider**: Set at creation or later via `setProvider`. Calls `submit(jobId, deliverable)` when work is done to move the job from Funded to Submitted for evaluation. Receives payment when job is Completed. Does not call `complete` or `reject`.
+- **Client**: Creates job (with optional description), may set provider via `setProvider(jobId, provider)` when job was created with no provider, sets budget with `setBudget(jobId, amount)`, funds escrow with `fund(jobId, expectedBudget)`, may reject **only when status is Open**. Receives refund on Rejected/Expired.
+- **Provider**: Set at creation or later via `setProvider`. May call `setBudget(jobId, amount)` to propose or negotiate a price. Calls `submit(jobId, deliverable)` when work is done to move the job from Funded to Submitted for evaluation. Receives payment when job is Completed. Does not call `complete` or `reject`.
 - **Evaluator**: Single address per job, set at creation. When status is Submitted, **only** the evaluator MAY call `complete(jobId, reason?)` or `reject(jobId, reason?)`. When status is Funded, the evaluator MAY call `reject(jobId, reason?)` (before submission). MAY be the client (e.g. `evaluator = client`) so the client can complete or reject the job without a third party.
 
 ### Job Data
@@ -75,8 +75,8 @@ Jobs MAY be created **without a provider** by passing `provider = address(0)` to
 
 - **setProvider(jobId, provider)**  
 Called by **client** only. SHALL revert if job is not Open, current `job.provider != address(0)`, or `provider == address(0)`. SHALL set `job.provider = provider` and SHALL emit an event (e.g. ProviderSet). Implementations MAY allow an operator role to call setProvider in the future; this specification only requires client-only for the minimal protocol.
-- **fund(jobId)**  
-SHALL revert if `job.provider == address(0)` (provider MUST be set before funding).
+- **fund(jobId, expectedBudget)**
+SHALL revert if `job.provider == address(0)` (provider MUST be set before funding) or if `job.budget != expectedBudget` (front-running protection).
 
 ### Core Functions
 
@@ -85,9 +85,9 @@ Called by client. Creates job in Open with `client = msg.sender`, `provider`, `e
 - **setProvider(jobId, provider, optParams?)**
 Called by client. SHALL revert if job is not Open, current `job.provider != address(0)`, or `provider == address(0)`. SHALL set `job.provider = provider`. `optParams` (bytes, OPTIONAL) is forwarded to the hook contract if set (see Hooks).
 - **setBudget(jobId, amount, optParams?)**
-Called by client. Sets `job.budget = amount`. SHALL revert if job is not Open or caller is not client. `optParams` forwarded to hook if set.
-- **fund(jobId, optParams?)**
-Called by client. SHALL revert if job is not Open, caller is not client, budget is zero, or **provider is not set** (`job.provider == address(0)`). SHALL transfer `job.budget` of the payment token from client to the contract (escrow) and set status to Funded. `optParams` forwarded to hook if set.
+Called by client or provider. Sets `job.budget = amount`. SHALL revert if job is not Open or caller is not client or provider. `optParams` forwarded to hook if set.
+- **fund(jobId, expectedBudget, optParams?)**
+Called by client. SHALL revert if job is not Open, caller is not client, budget is zero, **provider is not set** (`job.provider == address(0)`), or `job.budget != expectedBudget` (front-running protection). SHALL transfer `job.budget` of the payment token from client to the contract (escrow) and set status to Funded. `optParams` forwarded to hook if set.
 - **submit(jobId, deliverable, optParams?)**
 Called by provider only. SHALL revert if job is not Funded or caller is not the job’s provider. SHALL set status to Submitted. `deliverable` (`bytes32`) is a reference to submitted work (e.g. hash of off-chain deliverable, IPFS CID, attestation commitment). SHALL emit an event including `deliverable` (e.g. JobSubmitted). `optParams` forwarded to hook if set.
 - **complete(jobId, reason, optParams?)**
